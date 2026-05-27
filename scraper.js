@@ -95,21 +95,28 @@ const { chromium } = require('playwright');
         timeout: 45000
       });
 
+      // Esperar un momento corto a que el contenido se pinte
+      await noticiaPage.waitForTimeout(1000);
+
       // Extraer Título e Introducción directamente desde la página del artículo
       const datosInternos = await noticiaPage.evaluate(() => {
-        // El título principal suele estar en un h1, h2 o clase principal de la cabecera
-        const elementoTitulo = document.querySelector('h1') || 
-                               document.querySelector('h2') || 
-                               document.querySelector('.title-internal');
+        // SELECTOR ULTRA-FLEXIBLE: Buscamos h1, h2, h3 o clases comunes de títulos de este CMS
+        const selectorTitulo = document.querySelector('.enphasis-title') || 
+                               document.querySelector('.title-internal') ||
+                               document.querySelector('.titulo-noticia') ||
+                               document.querySelector('h1') || 
+                               document.querySelector('h2') ||
+                               document.querySelector('h3');
         
-        const tituloReal = elementoTitulo ? elementoTitulo.innerText.trim() : '';
+        // Si no encuentra ninguno, agarra el título de la pestaña del navegador (meta title)
+        const tituloReal = selectorTitulo ? selectorTitulo.innerText.trim() : document.title.split('|')[0].trim();
 
         // Extraer párrafos limpios para la descripción
         const parrafos = [...document.querySelectorAll('p')]
           .map(p => p.innerText.trim())
           .filter(t =>
-            t.length > 70 &&
-            t.length < 400 &&
+            t.length > 60 &&
+            t.length < 500 &&
             !t.toLowerCase().includes('youtube') &&
             !t.toLowerCase().includes('twitter') &&
             !t.toLowerCase().includes('facebook') &&
@@ -117,24 +124,32 @@ const { chromium } = require('playwright');
             !t.toLowerCase().includes('boletín')
           );
 
-        const descripcionReal = parrafos.find(t => t.includes('.') && t.split(' ').length > 8) || '';
+        // Intentar sacar el primer párrafo, si no, sacar el que tenga texto coherente
+        const descripcionReal = parrafos.find(t => t.includes('.') && t.split(' ').length > 6) || parrafos[0] || '';
 
         return { tituloReal, descripcionReal };
       });
 
-      // Validamos que la página interna realmente tuviera un título
-      if (datosInternos.tituloReal && datosInternos.tituloReal.length > 15) {
+      // Validamos y limpiamos el título obtenido
+      let tituloFinal = datosInternos.tituloReal
+        .replace(/\n/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      if (tituloFinal && tituloFinal.length > 5) {
         noticiasFinal.push({
-          titulo: datosInternos.tituloReal,
+          titulo: tituloFinal,
           enlace: item.enlace,
           imagen: item.imagen,
           descripcion: datosInternos.descripcionReal
         });
-        console.log(`✔ Procesada: ${datosInternos.tituloReal.substring(0, 50)}...`);
+        console.log(`✔ Procesada con éxito: ${tituloFinal.substring(0, 50)}...`);
+      } else {
+        console.log(`⚠ No se pudo extraer título válido en: ${item.enlace}`);
       }
 
     } catch (err) {
-      console.log(`❌ Error en enlace: ${item.enlace}`);
+      console.log(`❌ Error abriendo enlace: ${item.enlace}`);
     } finally {
       if (noticiaPage) await noticiaPage.close();
     }
@@ -142,6 +157,7 @@ const { chromium } = require('playwright');
 
   // REPORTE FINAL
   console.log('\n--- RESULTADO GENERAL ---');
+  console.log(`Total noticias estructuradas: ${noticiasFinal.length}`);
   console.log(JSON.stringify(noticiasFinal, null, 2));
 
   // Enviar a Webhook de Apps Script
@@ -152,10 +168,12 @@ const { chromium } = require('playwright');
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(noticiasFinal)
       });
-      console.log('Noticias enviadas correctamente al Webhook.');
+      console.log('¡Noticias enviadas correctamente al Google Sheet!');
     } catch (e) {
       console.log('Error enviando al Webhook:', e.message);
     }
+  } else {
+    console.log('No se enviaron datos. Webhook ausente o lista vacía.');
   }
 
   await browser.close();
