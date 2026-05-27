@@ -62,11 +62,14 @@ const { chromium } = require('playwright');
   // --------------------------------------------------------
 
   // Obtener noticias base (Tu lógica se mantiene igual)
+  // Obtener noticias base (VERSIÓN CORREGIDA Y TOLERANTE)
   const noticiasBase = await page.evaluate(() => {
     const usados = new Set();
-
+    
+    // Capturamos los contenedores o enlaces de noticias
     return [...document.querySelectorAll('a[href*="/noticias/"]')]
       .map(a => {
+        // Limpieza de espacios y saltos de línea
         const titulo = a.innerText
           .replace(/\n/g, ' ')
           .replace(/\r/g, ' ')
@@ -75,6 +78,7 @@ const { chromium } = require('playwright');
 
         const enlace = a.href;
 
+        // Buscar imagen cercana
         let img =
           a.querySelector('img') ||
           a.parentElement?.querySelector('img') ||
@@ -89,12 +93,23 @@ const { chromium } = require('playwright');
         return { titulo, enlace, imagen };
       })
       .filter(n => {
+        // 1. Validar enlace noticia
         if (!n.enlace.includes('/noticias/')) return false;
-        if (n.titulo.length < 10 || n.titulo.length > 180) return false;
-        if (n.titulo.includes('Noticias') || n.titulo.includes('am') || n.titulo.includes('pm')) return false;
-        if (usados.has(n.enlace)) return false;
+
+        // 2. Validar longitud del título (subimos el máximo por seguridad a 300)
+        if (n.titulo.length < 10 || n.titulo.length > 300) return false;
+
+        // 3. Eliminar basura real usando Expresiones Regulares precisas
+        // Ahora busca " am" o " pm" como palabras aisladas o formatos de hora, no dentro de otras palabras.
+        const tieneHoraBasura = /\b(am|pm)\b/i.test(n.titulo) || /:\d{2}/.test(n.titulo);
+        if (tieneHoraBasura) return false;
         
+        if (n.titulo.toLowerCase() === 'noticias') return false;
+
+        // 4. Evitar duplicados
+        if (usados.has(n.enlace)) return false;
         usados.add(n.enlace);
+
         return true;
       });
   });
