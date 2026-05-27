@@ -36,7 +36,6 @@ const { chromium } = require('playwright');
 
       if (clickExitoso) {
         console.log(`Botón 'Cargar más' pulsado (${i + 1}/${clicsDeseados})`);
-        // Esperar a que aparezcan nuevos enlaces en el DOM
         await page.waitForFunction(
           (antes) => document.querySelectorAll('a[href*="/noticias/"]').length > antes,
           enlacesAntes,
@@ -53,7 +52,7 @@ const { chromium } = require('playwright');
     }
   }
 
-  // ---- RECOLECCIÓN EXCLUSIVA DE ENLACES E IMÁGENES ----
+  // ---- RECOLECCIÓN DE ENLACES E IMÁGENES ----
   const fuentesNoticias = await page.evaluate(() => {
     const usados = new Set();
     const resultado = [];
@@ -63,11 +62,9 @@ const { chromium } = require('playwright');
     for (const a of todosLosEnlaces) {
       const enlace = a.href;
 
-      // Si el enlace ya existe o es basura de paginación, lo saltamos
       if (!enlace.includes('/noticias/') || usados.has(enlace)) continue;
 
-      // Capturar imagen cercana
-      const tarjeta = a.closest('.card') || a.parentElement?.parentElement || a;
+      const tarjeta = a.closest('.card') || a.closest('.item') || a.parentElement?.parentElement || a;
       const img = tarjeta.querySelector('img');
       let imagen = '';
       if (img) {
@@ -81,9 +78,9 @@ const { chromium } = require('playwright');
     return resultado;
   });
 
-  console.log(`Enlaces únicos recolectados: ${fuentesNoticias.length}. Entrando a extraer contenido real...`);
+  console.log(`Enlaces únicos recolectados: ${fuentesNoticias.length}. Extrayendo títulos reales de las notas...`);
 
-  // ---- EXTRACCIÓN INTERNA (TÍTULO Y DESCRIPCIÓN) ----
+  // ---- EXTRACCIÓN INTERNA REAL DE TÍTULOS ----
   const noticiasFinal = [];
 
   for (const item of fuentesNoticias) {
@@ -95,21 +92,31 @@ const { chromium } = require('playwright');
         timeout: 45000
       });
 
-      // Esperar un momento corto a que el contenido se pinte
       await noticiaPage.waitForTimeout(1000);
 
-      // Extraer Título e Introducción directamente desde la página del artículo
       const datosInternos = await noticiaPage.evaluate(() => {
-        // SELECTOR ULTRA-FLEXIBLE: Buscamos h1, h2, h3 o clases comunes de títulos de este CMS
-        const selectorTitulo = document.querySelector('.enphasis-title') || 
-                               document.querySelector('.title-internal') ||
-                               document.querySelector('.titulo-noticia') ||
-                               document.querySelector('h1') || 
-                               document.querySelector('h2') ||
-                               document.querySelector('h3');
+        // SELECTORES EXCLUSIVOS PARA EL CMS "MI COLOMBIA DIGITAL"
+        // Buscamos las clases exactas donde esconden el título principal de la noticia
+        const elementoTitulo = document.querySelector('.title_page') || 
+                               document.querySelector('.title-page') ||
+                               document.querySelector('.heading-title') ||
+                               document.querySelector('.news-detail-title') ||
+                               document.querySelector('.container .title') ||
+                               document.querySelector('h1.title');
         
-        // Si no encuentra ninguno, agarra el título de la pestaña del navegador (meta title)
-        const tituloReal = selectorTitulo ? selectorTitulo.innerText.trim() : document.title.split('|')[0].trim();
+        let tituloReal = '';
+        if (elementoTitulo) {
+          tituloReal = elementoTitulo.innerText.trim();
+        } else {
+          // Si falla, intentamos extraer el texto del h1 o h2 más grande de la zona central
+          const h1Comun = document.querySelector('main h1') || document.querySelector('article h1') || document.querySelector('h1');
+          tituloReal = h1Comun ? h1Comun.innerText.trim() : '';
+        }
+
+        // Si el título capturado sigue siendo "Tunja, Boyacá", lo vaciamos para forzar el descarte de basura
+        if (tituloReal.toLowerCase() === 'tunja, boyacá' || tituloReal.toLowerCase() === 'tunja, boyaca') {
+          tituloReal = '';
+        }
 
         // Extraer párrafos limpios para la descripción
         const parrafos = [...document.querySelectorAll('p')]
@@ -120,36 +127,27 @@ const { chromium } = require('playwright');
             !t.toLowerCase().includes('youtube') &&
             !t.toLowerCase().includes('twitter') &&
             !t.toLowerCase().includes('facebook') &&
-            !t.toLowerCase().includes('instagram') &&
-            !t.toLowerCase().includes('boletín')
+            !t.toLowerCase().includes('instagram')
           );
 
-        // Intentar sacar el primer párrafo, si no, sacar el que tenga texto coherente
         const descripcionReal = parrafos.find(t => t.includes('.') && t.split(' ').length > 6) || parrafos[0] || '';
 
         return { tituloReal, descripcionReal };
       });
 
-      // Validamos y limpiamos el título obtenido
-      let tituloFinal = datosInternos.tituloReal
-        .replace(/\n/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-      if (tituloFinal && tituloFinal.length > 5) {
+      // Validar que el título sea legítimo y no la cabecera genérica
+      if (datosInternos.tituloReal && datosInternos.tituloReal.length > 10) {
         noticiasFinal.push({
-          titulo: tituloFinal,
+          titulo: datosInternos.tituloReal.replace(/\s+/g, ' ').trim(),
           enlace: item.enlace,
           imagen: item.imagen,
           descripcion: datosInternos.descripcionReal
         });
-        console.log(`✔ Procesada con éxito: ${tituloFinal.substring(0, 50)}...`);
-      } else {
-        console.log(`⚠ No se pudo extraer título válido en: ${item.enlace}`);
+        console.log(`✔ Procesada: ${datosInternos.tituloReal.substring(0, 50)}...`);
       }
 
     } catch (err) {
-      console.log(`❌ Error abriendo enlace: ${item.enlace}`);
+      console.log(`❌ Error en enlace: ${item.enlace}`);
     } finally {
       if (noticiaPage) await noticiaPage.close();
     }
@@ -157,7 +155,7 @@ const { chromium } = require('playwright');
 
   // REPORTE FINAL
   console.log('\n--- RESULTADO GENERAL ---');
-  console.log(`Total noticias estructuradas: ${noticiasFinal.length}`);
+  console.log(`Total noticias procesadas correctamente: ${noticiasFinal.length}`);
   console.log(JSON.stringify(noticiasFinal, null, 2));
 
   // Enviar a Webhook de Apps Script
@@ -172,8 +170,6 @@ const { chromium } = require('playwright');
     } catch (e) {
       console.log('Error enviando al Webhook:', e.message);
     }
-  } else {
-    console.log('No se enviaron datos. Webhook ausente o lista vacía.');
   }
 
   await browser.close();
