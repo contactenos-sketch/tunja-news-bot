@@ -22,63 +22,72 @@ const { chromium } = require('playwright');
     const usados = new Set();
 
     return [...document.querySelectorAll('a')]
-      .map(a => {
+  .map(a => {
 
-        const titulo = a.innerText
-          .replace(/\n/g, ' ')
-          .replace(/\r/g, ' ')
-          .replace(/\s+/g, ' ')
+    const titulo = a.innerText
+      .replace(/\n/g, ' ')
+      .replace(/\r/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const enlace = a.href;
+
+    // Buscar imagen
+    let img =
+      a.querySelector('img') ||
+      a.parentElement?.querySelector('img') ||
+      a.parentElement?.parentElement?.querySelector('img');
+
+    let imagen = '';
+
+    if (img) {
+      imagen =
+        img.src ||
+        img.dataset.src ||
+        img.getAttribute('data-src') ||
+        '';
+    }
+
+    // Buscar descripción cercana
+    let descripcion = '';
+
+    const posiblesTextos = [
+      a.parentElement?.innerText,
+      a.parentElement?.parentElement?.innerText,
+      a.parentElement?.parentElement?.parentElement?.innerText
+    ];
+
+    for (const texto of posiblesTextos) {
+
+      if (!texto) continue;
+
+      const limpio = texto
+        .replace(/\n/g, ' ')
+        .replace(/\r/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      // Buscar texto más largo que el título
+      if (
+        limpio.length > titulo.length + 20 &&
+        limpio.length < 400
+      ) {
+
+        descripcion = limpio
+          .replace(titulo, '')
           .trim();
 
-        const enlace = a.href;
+        break;
+      }
+    }
 
-        let img =
-          a.querySelector('img') ||
-          a.parentElement?.querySelector('img') ||
-          a.parentElement?.parentElement?.querySelector('img');
-
-        let imagen = '';
-
-        if (img) {
-          imagen =
-            img.src ||
-            img.dataset.src ||
-            '';
-        }
-
-        return {
-          titulo,
-          enlace,
-          imagen
-        };
-      })
-      .filter(n => {
-
-        if (!n.enlace.includes('/noticias/'))
-          return false;
-
-        if (n.titulo.length < 10)
-          return false;
-
-        if (n.titulo.length > 120)
-          return false;
-
-        if (
-          n.titulo.includes('Noticias') ||
-          n.titulo.includes('am') ||
-          n.titulo.includes('pm')
-        )
-          return false;
-
-        if (usados.has(n.enlace))
-          return false;
-
-        usados.add(n.enlace);
-
-        return true;
-      });
-
-  });
+    return {
+      titulo,
+      enlace,
+      imagen,
+      descripcion
+    };
+  })
 
   console.log(noticias);
 
