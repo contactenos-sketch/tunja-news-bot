@@ -57,47 +57,70 @@ const { chromium } = require('playwright');
     }
   }
 
-  // ---- EXTRACCIÓN DE DATOS REESTRUCTURADA ----
-  console.log('Extrayendo enlaces de noticias...');
+  // ---- EXTRACCIÓN DE DATOS REESTRUCTURADA E INTELIGENTE ----
+  console.log('Extrayendo enlaces y títulos reales de noticias...');
   
   const noticiasBase = await page.evaluate(() => {
     const usados = new Set();
     const listaNoticias = [];
 
-    // Buscamos TODOS los enlaces que lleven a una noticia
+    // Buscamos todos los enlaces de noticias
     const todosLosEnlaces = Array.from(document.querySelectorAll('a[href*="/noticias/"]'));
 
     for (const a of todosLosEnlaces) {
       const enlace = a.href;
 
-      // Si el enlace ya lo procesamos en esta misma limpieza, lo ignoramos
+      // Evitar duplicados en el mismo barrido
       if (usados.has(enlace)) continue;
 
-      // Intentamos capturar un título limpio
-      let titulo = a.innerText
+      // 1. Encontrar la tarjeta contenedora completa de la noticia
+      const tarjeta = a.closest('.card') || a.closest('[class*="item"]') || a.closest('div') || a.parentElement;
+      
+      let titulo = '';
+
+      // 2. Intentar buscar el título en las etiquetas jerárquicas reales dentro de esa tarjeta
+      if (tarjeta) {
+        const elementoTitulo = tarjeta.querySelector('h3') || 
+                               tarjeta.querySelector('h4') || 
+                               tarjeta.querySelector('.title') ||
+                               tarjeta.querySelector('[class*="titulo"]');
+        
+        if (elementoTitulo) {
+          titulo = elementoTitulo.innerText.trim();
+        }
+      }
+
+      // 3. Si no encontró h3/h4, usamos el texto del enlace pero limpiando fechas conocidas
+      if (!titulo) {
+        titulo = a.innerText.trim();
+      }
+
+      // Limpieza general de caracteres raros y espacios masivos
+      titulo = titulo
         .replace(/\n/g, ' ')
         .replace(/\r/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
 
-      // Si el enlace no tenía texto (era una imagen envolvente), buscamos texto a su alrededor
-      if (titulo.length < 10) {
-        const tarjetaContenedora = a.closest('div') || a.parentElement;
-        const enlaceConTexto = tarjetaContenedora?.querySelector('a[href*="/noticias/"] h3') || 
-                               tarjetaContenedora?.querySelector('h3') || 
-                               tarjetaContenedora?.querySelector('a[href*="/noticias/"]');
-        if (enlaceConTexto) {
-          titulo = enlaceConTexto.innerText.replace(/\s+/g, ' ').trim();
+      // --- FILTRO ANTI-FECHAS Y BASURA ---
+      // Si el título es solo una fecha (ej: "15 de mayo" o "2026") o es muy corto, lo descartamos o ignoramos
+      const esSoloFecha = /^\d+.+de.+\d+$/i.test(titulo) || 
+                          /^(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i.test(titulo);
+      
+      if (esSoloFecha || titulo.length < 12) {
+        // Si lo que agarramos fue una fecha, intentamos un último recurso: buscar texto en los hermanos del enlace
+        const textoAlternativo = tarjeta?.innerText.replace(titulo, '').replace(/\s+/g, ' ').trim();
+        if (textoAlternativo && textoAlternativo.length > 15 && textoAlternativo.length < 250) {
+          titulo = textoAlternativo;
+        } else {
+          continue; // Si sigue siendo basura, saltamos al siguiente enlace
         }
       }
 
-      // Validaciones de seguridad para el título
-      if (titulo.length < 10 || titulo.length > 250) continue;
-      if (titulo.toLowerCase() === 'noticias' || titulo.toLowerCase().includes('leer más')) continue;
+      if (titulo.length > 250 || titulo.toLowerCase().includes('leer más')) continue;
 
-      // Buscar imagen dentro de la misma estructura de la tarjeta
-      const tarjeta = a.closest('div[class*="card"]') || a.parentElement?.parentElement || a;
-      const img = tarjeta.querySelector('img');
+      // 4. Buscar la imagen dentro de la tarjeta
+      const img = tarjeta ? tarjeta.querySelector('img') : null;
       let imagen = '';
       if (img) {
         imagen = img.src || img.dataset.src || img.getAttribute('data-src') || '';
@@ -109,8 +132,6 @@ const { chromium } = require('playwright');
 
     return listaNoticias;
   });
-
-  console.log(`¡Éxito! Total de noticias reales encontradas: ${noticiasBase.length}`);
 
   // ---- CONSUMO DE CADA NOTICIA INTERNA ----
   const noticiasFinal = [];
