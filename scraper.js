@@ -115,29 +115,21 @@ const { chromium } = require('playwright');
     !t.includes('Instagram:')
   );
 
-  // Tomar el párrafo introductorio correcto
   return parrafos[1] || parrafos[0] || '';
 
 });
 
-      noticia.descripcion = descripcion;
+noticiasFinal.push({
+  ...noticia,
+  descripcion
+});
 
-      noticiasFinal.push(noticia);
+console.log({
+  titulo: noticia.titulo,
+  descripcion: descripcion
+});
 
-      await noticiaPage.close();
-
-    } catch(err) {
-
-      console.log(
-        'Error noticia:',
-        noticia.enlace
-      );
-
-    }
-  }
-
-  console.log(noticiasFinal);
-
+await noticiaPage.close();
   await fetch(process.env.WEBHOOK_URL, {
     method: 'POST',
     headers: {
