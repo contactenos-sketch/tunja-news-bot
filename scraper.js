@@ -17,8 +17,44 @@ const { chromium } = require('playwright');
     }
   );
 
-  // Esperar renderizado JS
-  await page.waitForTimeout(5000);
+ // Esperar carga inicial
+await page.waitForTimeout(3000);
+
+// Pulsar varias veces el botón
+for (let i = 0; i < 3; i++) {
+
+  try {
+
+    // Buscar botón
+    const boton = await page.locator(
+      'text=CARGAR MÁS CONTENIDO'
+    );
+
+    // Si existe, hacer click
+    if (await boton.count() > 0) {
+
+      await boton.click();
+
+      console.log(
+        'Botón cargar más pulsado'
+      );
+
+      // Esperar nuevas noticias
+      await page.waitForTimeout(3000);
+
+    }
+
+  } catch(err) {
+
+    console.log(
+      'No hay más botón cargar contenido'
+    );
+
+    break;
+
+  }
+
+}
 
   // Obtener noticias base
   const noticiasBase = await page.evaluate(() => {
