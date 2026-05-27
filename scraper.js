@@ -2,28 +2,27 @@ const { chromium } = require('playwright');
 
 (async () => {
   const browser = await chromium.launch({
-    headless: true // Puedes cambiarlo a false para ver el navegador en acción
+    headless: true
   });
 
   const page = await browser.newPage();
 
-  console.log('Abriendo el portal de noticias...');
+  console.log('Abriendo portal de noticias de Tunja...');
   await page.goto('https://www.tunja-boyaca.gov.co/tema/noticias', {
     waitUntil: 'domcontentloaded',
     timeout: 60000
   });
 
-  // Esperar a que aparezcan las primeras noticias en pantalla
+  // Esperar carga de las primeras noticias
   await page.waitForSelector('a[href*="/noticias/"]', { timeout: 20000 });
   await page.waitForTimeout(2000);
 
-  // ---- PROCESO DE CLICS CON ESPERA REAL EN EL DOM ----
-  const clicsDeseados = 3; // 3 clics × 4 noticias aprox = ~16 noticias
+  // ---- CONTROL DE CLICS (CARGAR MÁS) ----
+  const clicsDeseados = 4; 
   
   for (let i = 0; i < clicsDeseados; i++) {
     try {
-      // Contar cuántas noticias hay ANTES del clic
-      const noticiasAntes = await page.evaluate(() => document.querySelectorAll('a[href*="/noticias/"]').length);
+      const enlacesAntes = await page.evaluate(() => document.querySelectorAll('a[href*="/noticias/"]').length);
 
       const clickExitoso = await page.evaluate(() => {
         const botones = Array.from(document.querySelectorAll('button'));
@@ -36,19 +35,16 @@ const { chromium } = require('playwright');
       });
 
       if (clickExitoso) {
-        console.log(`Botón pulsado (Iteración ${i + 1}). Esperando nuevos contenidos...`);
-        
-        // REGLA DE ORO: Esperar a que el número de enlaces en el HTML aumente
-        // Si no aumenta, el script se detiene un momento antes de continuar
+        console.log(`Botón 'Cargar más' pulsado (${i + 1}/${clicsDeseados})`);
+        // Esperar a que aparezcan nuevos enlaces en el DOM
         await page.waitForFunction(
           (antes) => document.querySelectorAll('a[href*="/noticias/"]').length > antes,
-          noticiasAntes,
+          enlacesAntes,
           { timeout: 8000 }
-        ).catch(() => console.log('La página tardó en responder, continuando...'));
-
-        await page.waitForTimeout(2000); // Pausa de estabilidad
+        ).catch(() => {});
+        await page.waitForTimeout(2500);
       } else {
-        console.log('No se encontró el botón "Cargar más". Fin del bucle.');
+        console.log('No se encontró más el botón.');
         break;
       }
     } catch (err) {
@@ -57,57 +53,21 @@ const { chromium } = require('playwright');
     }
   }
 
-  // ---- EXTRACTOR AGRESIVO: FILTRADO Y LIMPIEZA DE FECHAS ----
-  console.log('Extrayendo y limpiando títulos de forma estricta...');
-  
-  const noticiasBase = await page.evaluate(() => {
+  // ---- RECOLECCIÓN EXCLUSIVA DE ENLACES E IMÁGENES ----
+  const fuentesNoticias = await page.evaluate(() => {
     const usados = new Set();
-    const listaNoticias = [];
+    const resultado = [];
 
-    // Buscamos todos los enlaces de noticias
     const todosLosEnlaces = Array.from(document.querySelectorAll('a[href*="/noticias/"]'));
 
     for (const a of todosLosEnlaces) {
       const enlace = a.href;
 
-      // Evitar duplicados
-      if (usados.has(enlace)) continue;
+      // Si el enlace ya existe o es basura de paginación, lo saltamos
+      if (!enlace.includes('/noticias/') || usados.has(enlace)) continue;
 
-      // Capturar todo el texto que exista dentro del enlace o su tarjeta contenedora
-      const tarjeta = a.closest('.card') || a.closest('[class*="item"]') || a;
-      let textoCompleto = tarjeta.innerText || a.innerText || '';
-
-      // --- LIMPIEZA DE FECHAS MEDIANTE REGEX ---
-      // Este regex detecta patrones como: "24 de Mayo de 2026", "05 de Enero", "2026-05-12", etc.
-      const regexFechas = [
-        /\d{1,2}\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)[^\n\r]*/i,
-        /(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+\d{1,2}[^\n\r]*/i,
-        /\d{4}-\d{2}-\d{2}/g,
-        /\d{2}\/\d{2}\/\d{4}/g
-      ];
-
-      // Aplicamos los borradores de fechas sobre el texto
-      let tituloLimpio = textoCompleto;
-      for (const regex of regexFechas) {
-        tituloLimpio = tituloLimpio.replace(regex, '');
-      }
-
-      // Limpieza de palabras sueltas que introduce el CMS de Mi Colombia Digital
-      tituloLimpio = tituloLimpio
-        .replace(/compartir en/gi, '')
-        .replace(/leer más/gi, '')
-        .replace(/noticia/gi, '')
-        .replace(/\n/g, ' ')
-        .replace(/\r/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-      // Si después de borrar la fecha el título quedó vacío o ridículamente corto, saltamos
-      if (tituloLimpio.length < 15 || tituloLimpio.length > 250) {
-        continue;
-      }
-
-      // Buscar la imagen
+      // Capturar imagen cercana
+      const tarjeta = a.closest('.card') || a.parentElement?.parentElement || a;
       const img = tarjeta.querySelector('img');
       let imagen = '';
       if (img) {
@@ -115,61 +75,77 @@ const { chromium } = require('playwright');
       }
 
       usados.add(enlace);
-      listaNoticias.push({ 
-        titulo: tituloLimpio, 
-        enlace, 
-        imagen 
-      });
+      resultado.push({ enlace, imagen });
     }
 
-    return listaNoticias;
+    return resultado;
   });
-  // ---- CONSUMO DE CADA NOTICIA INTERNA ----
+
+  console.log(`Enlaces únicos recolectados: ${fuentesNoticias.length}. Entrando a extraer contenido real...`);
+
+  // ---- EXTRACCIÓN INTERNA (TÍTULO Y DESCRIPCIÓN) ----
   const noticiasFinal = [];
 
-  for (const noticia of noticiasBase) {
+  for (const item of fuentesNoticias) {
+    let noticiaPage;
     try {
-      const noticiaPage = await browser.newPage();
-      await noticiaPage.goto(noticia.enlace, {
+      noticiaPage = await browser.newPage();
+      await noticiaPage.goto(item.enlace, {
         waitUntil: 'domcontentloaded',
         timeout: 45000
       });
 
-      await noticiaPage.waitForSelector('p', { timeout: 10000 }).catch(() => {});
-      
-      const descripcion = await noticiaPage.evaluate(() => {
+      // Extraer Título e Introducción directamente desde la página del artículo
+      const datosInternos = await noticiaPage.evaluate(() => {
+        // El título principal suele estar en un h1, h2 o clase principal de la cabecera
+        const elementoTitulo = document.querySelector('h1') || 
+                               document.querySelector('h2') || 
+                               document.querySelector('.title-internal');
+        
+        const tituloReal = elementoTitulo ? elementoTitulo.innerText.trim() : '';
+
+        // Extraer párrafos limpios para la descripción
         const parrafos = [...document.querySelectorAll('p')]
           .map(p => p.innerText.trim())
           .filter(t =>
             t.length > 70 &&
             t.length < 400 &&
-            !t.includes('Youtube:') &&
-            !t.includes('Twitter:') &&
-            !t.includes('Facebook:') &&
-            !t.includes('Instagram:')
+            !t.toLowerCase().includes('youtube') &&
+            !t.toLowerCase().includes('twitter') &&
+            !t.toLowerCase().includes('facebook') &&
+            !t.toLowerCase().includes('instagram') &&
+            !t.toLowerCase().includes('boletín')
           );
 
-        return parrafos.find(t => t.includes('.') && t.split(' ').length > 8) || '';
+        const descripcionReal = parrafos.find(t => t.includes('.') && t.split(' ').length > 8) || '';
+
+        return { tituloReal, descripcionReal };
       });
 
-      noticiasFinal.push({
-        titulo: noticia.titulo,
-        enlace: noticia.enlace,
-        imagen: noticia.imagen,
-        descripcion: descripcion
-      });
+      // Validamos que la página interna realmente tuviera un título
+      if (datosInternos.tituloReal && datosInternos.tituloReal.length > 15) {
+        noticiasFinal.push({
+          titulo: datosInternos.tituloReal,
+          enlace: item.enlace,
+          imagen: item.imagen,
+          descripcion: datosInternos.descripcionReal
+        });
+        console.log(`✔ Procesada: ${datosInternos.tituloReal.substring(0, 50)}...`);
+      }
 
-      await noticiaPage.close();
     } catch (err) {
-      console.log('Error leyendo noticia individual, saltando:', noticia.enlace);
+      console.log(`❌ Error en enlace: ${item.enlace}`);
+    } finally {
+      if (noticiaPage) await noticiaPage.close();
     }
   }
 
-  // Imprimir resultado en consola
+  // REPORTE FINAL
+  console.log('\n--- RESULTADO GENERAL ---');
   console.log(JSON.stringify(noticiasFinal, null, 2));
 
-  // Enviar a Webhook de Apps Script si existe la variable
-  if (process.env.WEBHOOK_URL) {
+  // Enviar a Webhook de Apps Script
+  if (process.env.WEBHOOK_URL && noticiasFinal.length > 0) {
     try {
       await fetch(process.env.WEBHOOK_URL, {
         method: 'POST',
