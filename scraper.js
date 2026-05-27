@@ -105,14 +105,16 @@ const { chromium } = require('playwright');
       const noticiaPage = await browser.newPage();
 
       await noticiaPage.goto(
-        noticia.enlace,
-        {
-          waitUntil: 'networkidle'
-        }
-      );
+  noticia.enlace,
+  {
+    waitUntil: 'domcontentloaded',
+    timeout: 60000
+  }
+);
 
-      await noticiaPage.waitForTimeout(3000);
-
+await noticiaPage.waitForSelector('p', {
+  timeout: 15000
+});
       // Extraer párrafo introductorio
       const descripcion = await noticiaPage.evaluate(() => {
 
@@ -157,7 +159,8 @@ const { chromium } = require('playwright');
 
       console.log(
         'Error noticia:',
-        noticia.enlace
+        noticia.enlace,
+        err
       );
 
     }
