@@ -21,73 +21,110 @@ const { chromium } = require('playwright');
 
     const usados = new Set();
 
-    return [...document.querySelectorAll('a')]
-  .map(a => {
+    const resultados = [];
 
-    const titulo = a.innerText
-      .replace(/\n/g, ' ')
-      .replace(/\r/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+    // Buscar posibles tarjetas de noticias
+    const cards = document.querySelectorAll(
+      'article, .card, .views-row, .news-item, .view-content > div'
+    );
 
-    const enlace = a.href;
+    cards.forEach(card => {
 
-    // Buscar imagen
-    let img =
-      a.querySelector('img') ||
-      a.parentElement?.querySelector('img') ||
-      a.parentElement?.parentElement?.querySelector('img');
+      // Buscar enlace noticia
+      const link = card.querySelector('a[href*="/noticias/"]');
 
-    let imagen = '';
+      if (!link) return;
 
-    if (img) {
-      imagen =
-        img.src ||
-        img.dataset.src ||
-        img.getAttribute('data-src') ||
-        '';
-    }
+      const enlace = link.href;
 
-    // Buscar descripción cercana
-    let descripcion = '';
+      if (usados.has(enlace)) return;
 
-    const posiblesTextos = [
-      a.parentElement?.innerText,
-      a.parentElement?.parentElement?.innerText,
-      a.parentElement?.parentElement?.parentElement?.innerText
-    ];
+      usados.add(enlace);
 
-    for (const texto of posiblesTextos) {
+      // Buscar título
+      let titulo = '';
 
-      if (!texto) continue;
+      const posiblesTitulos = [
+        card.querySelector('h1'),
+        card.querySelector('h2'),
+        card.querySelector('h3'),
+        card.querySelector('h4'),
+        link
+      ];
 
-      const limpio = texto
-        .replace(/\n/g, ' ')
-        .replace(/\r/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
+      for (const el of posiblesTitulos) {
 
-      // Buscar texto más largo que el título
-      if (
-        limpio.length > titulo.length + 20 &&
-        limpio.length < 400
-      ) {
+        if (el?.innerText?.trim()) {
 
-        descripcion = limpio
-          .replace(titulo, '')
-          .trim();
+          titulo = el.innerText
+            .replace(/\n/g, ' ')
+            .replace(/\r/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
 
-        break;
+          if (titulo.length > 10) break;
+        }
       }
-    }
 
-    return {
-      titulo,
-      enlace,
-      imagen,
-      descripcion
-    };
-  })
+      // Buscar descripción
+      let descripcion = '';
+
+      const posiblesDescripciones = [
+        card.querySelector('p'),
+        card.querySelector('.summary'),
+        card.querySelector('.description'),
+        card.querySelector('.field-content'),
+        card.querySelector('.views-field-body')
+      ];
+
+      for (const el of posiblesDescripciones) {
+
+        if (el?.innerText?.trim()) {
+
+          descripcion = el.innerText
+            .replace(/\n/g, ' ')
+            .replace(/\r/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+          if (
+            descripcion.length > 30 &&
+            descripcion !== titulo
+          ) {
+            break;
+          }
+        }
+      }
+
+      // Buscar imagen
+      let imagen = '';
+
+      const img = card.querySelector('img');
+
+      if (img) {
+
+        imagen =
+          img.src ||
+          img.dataset.src ||
+          img.getAttribute('data-src') ||
+          '';
+      }
+
+      // Validaciones
+      if (!titulo) return;
+
+      resultados.push({
+        titulo,
+        enlace,
+        imagen,
+        descripcion
+      });
+
+    });
+
+    return resultados;
+
+  });
 
   console.log(noticias);
 
