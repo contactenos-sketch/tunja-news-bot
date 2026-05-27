@@ -7,12 +7,25 @@ const { chromium } = require('playwright');
 
   const page = await browser.newPage();
 
-  // Abrir portal de noticias
-  await page.goto('https://www.tunja-boyaca.gov.co/tema/noticias', {
-    waitUntil: 'networkidle'
-  });
+ // Abrir portal de noticias
+  await page.goto(
+    'https://www.tunja-boyaca.gov.co/tema/noticias',
+    {
+      // 1. Cambiamos a 'domcontentloaded': el script continuará 
+      // tan pronto como el HTML básico esté listo, sin esperar imágenes o scripts pesados.
+      waitUntil: 'domcontentloaded', 
+      // 2. Aumentamos el tiempo de espera a 60 segundos por si el servidor está lento.
+      timeout: 60000 
+    }
+  );
 
-  // Esperar carga inicial
+  console.log('Página inicial cargada (DOM listo).');
+
+  // 3. Esperamos un elemento real en lugar de confiar en la red.
+  // Esto asegura que las primeras 4 noticias ya se pintaron en pantalla.
+  await page.waitForSelector('a[href*="/noticias/"]', { timeout: 20000 });
+  
+  // Una pequeña pausa de seguridad antes de empezar a interactuar con el botón
   await page.waitForTimeout(3000);
 
   // ---- SECCIÓN OPTIMIZADA PARA CARGAR MÁS CONTENIDOS ----
