@@ -101,19 +101,24 @@ const { chromium } = require('playwright');
 
       const descripcion = await noticiaPage.evaluate(() => {
 
-        // Buscar párrafos reales del contenido
-        const parrafos = [
-          ...document.querySelectorAll('p')
-        ]
-        .map(p => p.innerText.trim())
-        .filter(t =>
-          t.length > 50 &&
-          t.length < 500
-        );
+  const parrafos = [
+    ...document.querySelectorAll('p')
+  ]
+  .map(p => p.innerText.trim())
+  .filter(t =>
+    t.length > 50 &&
+    t.length < 500 &&
+    !t.includes('Youtube:') &&
+    !t.includes('Soundcloud:') &&
+    !t.includes('Twitter:') &&
+    !t.includes('Facebook:') &&
+    !t.includes('Instagram:')
+  );
 
-        return parrafos[0] || '';
+  // Tomar el párrafo introductorio correcto
+  return parrafos[1] || parrafos[0] || '';
 
-      });
+});
 
       noticia.descripcion = descripcion;
 
