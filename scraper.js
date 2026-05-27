@@ -1,3 +1,5 @@
+throw new Error('VERSION NUEVA DETECTADA');
+
 const { chromium } = require('playwright');
 
 (async () => {
