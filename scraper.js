@@ -1,176 +1,182 @@
 const { chromium } = require('playwright');
 
 (async () => {
+
   const browser = await chromium.launch({
     headless: true
   });
 
   const page = await browser.newPage();
 
-  console.log('Abriendo portal de noticias de Tunja...');
-  await page.goto('https://www.tunja-boyaca.gov.co/tema/noticias', {
-    waitUntil: 'domcontentloaded',
-    timeout: 60000
-  });
+  // Abrir portal de noticias
+  await page.goto(
+    'https://www.tunja-boyaca.gov.co/tema/noticias',
+    {
+      waitUntil: 'networkidle'
+    }
+  );
 
-  // Esperar carga de las primeras noticias
-  await page.waitForSelector('a[href*="/noticias/"]', { timeout: 20000 });
-  await page.waitForTimeout(2000);
+  // Esperar carga inicial
+  await page.waitForTimeout(3000);
 
-  // ---- CONTROL DE CLICS (CARGAR MÁS) ----
-  const clicsDeseados = 4; 
-  
-  for (let i = 0; i < clicsDeseados; i++) {
+  // Pulsar varias veces el botón (Tu lógica original intacta)
+  for (let i = 0; i < 3; i++) {
     try {
-      const enlacesAntes = await page.evaluate(() => document.querySelectorAll('a[href*="/noticias/"]').length);
+      // Buscar botón
+      const boton = await page.locator('text=CARGAR MÁS CONTENIDO');
 
-      const clickExitoso = await page.evaluate(() => {
-        const botones = Array.from(document.querySelectorAll('button'));
-        const botonCargar = botones.find(b => b.innerText.toLowerCase().includes('cargar más'));
-        if (botonCargar) {
-          botonCargar.click();
-          return true;
-        }
-        return false;
-      });
-
-      if (clickExitoso) {
-        console.log(`Botón 'Cargar más' pulsado (${i + 1}/${clicsDeseados})`);
-        await page.waitForFunction(
-          (antes) => document.querySelectorAll('a[href*="/noticias/"]').length > antes,
-          enlacesAntes,
-          { timeout: 8000 }
-        ).catch(() => {});
-        await page.waitForTimeout(2500);
-      } else {
-        console.log('No se encontró más el botón.');
-        break;
+      // Si existe, hacer click
+      if (await boton.count() > 0) {
+        await boton.click();
+        console.log('Botón cargar más pulsado');
+        
+        // Esperar nuevas noticias
+        await page.waitForTimeout(3000);
       }
-    } catch (err) {
-      console.log('Aviso en iteración:', err.message);
+    } catch(err) {
+      console.log('No hay más botón cargar contenido');
       break;
     }
   }
 
-  // ---- RECOLECCIÓN DE ENLACES E IMÁGENES ----
-  const fuentesNoticias = await page.evaluate(() => {
+  // Obtener noticias base
+  const noticiasBase = await page.evaluate(() => {
+
     const usados = new Set();
-    const resultado = [];
 
-    const todosLosEnlaces = Array.from(document.querySelectorAll('a[href*="/noticias/"]'));
+    return [...document.querySelectorAll('a[href*="/noticias/"]')]
+      .map(a => {
+        let titulo = a.innerText
+          .replace(/\n/g, ' ')
+          .replace(/\r/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
 
-    for (const a of todosLosEnlaces) {
-      const enlace = a.href;
+        const enlace = a.href;
 
-      if (!enlace.includes('/noticias/') || usados.has(enlace)) continue;
+        // --- SOLUCIÓN AL PROBLEMA DE LAS FECHAS Y ENLACES VACÍOS ---
+        // Si el enlace no tiene texto, o si es una fecha (ej. "27 de Mayo"), 
+        // buscamos el título real en el bloque h3 o h4 más cercano de la tarjeta.
+        if (titulo.length < 10 || /^\d/.test(titulo) || /de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i.test(titulo)) {
+          const contenedor = a.closest('.card') || a.parentElement?.parentElement || a;
+          const hReal = contenedor.querySelector('h3') || contenedor.querySelector('h4') || contenedor.querySelector('[class*="titulo"]');
+          if (hReal) {
+            titulo = hReal.innerText.replace(/\s+/g, ' ').trim();
+          }
+        }
 
-      const tarjeta = a.closest('.card') || a.closest('.item') || a.parentElement?.parentElement || a;
-      const img = tarjeta.querySelector('img');
-      let imagen = '';
-      if (img) {
-        imagen = img.src || img.dataset.src || img.getAttribute('data-src') || '';
-      }
+        // Buscar imagen cercana
+        let img =
+          a.querySelector('img') ||
+          a.parentElement?.querySelector('img') ||
+          a.parentElement?.parentElement?.querySelector('img') ||
+          a.parentElement?.parentElement?.parentElement?.querySelector('img');
 
-      usados.add(enlace);
-      resultado.push({ enlace, imagen });
-    }
+        let imagen = '';
+        if (img) {
+          imagen = img.src || img.dataset.src || img.getAttribute('data-src') || '';
+        }
 
-    return resultado;
+        return { titulo, enlace, imagen };
+      })
+      .filter(n => {
+        // Validar enlace noticia
+        if (!n.enlace.includes('/noticias/')) return false;
+
+        // Validar título (Aumentamos a 250 porque las viejas tienen títulos más largos)
+        if (n.titulo.length < 10) return false;
+        if (n.titulo.length > 250) return false;
+
+        // --- CORRECCIÓN CRUCIAL DE FILTROS ---
+        if (n.titulo.includes('Noticias') || n.titulo.toLowerCase() === 'tunja, boyacá') return false;
+        
+        // Reemplazamos el "includes('am')" ciego por una validación que solo busque la hora real " am " o " pm " aislada
+        if (/\b(am|pm)\b/i.test(n.titulo)) return false;
+
+        // Evitar duplicados
+        if (usados.has(n.enlace)) return false;
+        usados.add(n.enlace);
+
+        return true;
+      });
+
   });
 
-  console.log(`Enlaces únicos recolectados: ${fuentesNoticias.length}. Extrayendo títulos reales de las notas...`);
-
-  // ---- EXTRACCIÓN INTERNA REAL DE TÍTULOS ----
   const noticiasFinal = [];
 
-  for (const item of fuentesNoticias) {
-    let noticiaPage;
+  // Entrar a cada noticia (Tu lógica original intacta)
+  for (const noticia of noticiasBase) {
     try {
-      noticiaPage = await browser.newPage();
-      await noticiaPage.goto(item.enlace, {
-        waitUntil: 'domcontentloaded',
-        timeout: 45000
+      const noticiaPage = await browser.newPage();
+      await noticiaPage.goto(
+        noticia.enlace,
+        {
+          waitUntil: 'domcontentloaded',
+          timeout: 60000
+        }
+      );
+
+      await noticiaPage.waitForSelector('p', {
+        timeout: 15000
       });
 
-      await noticiaPage.waitForTimeout(1000);
+      // Extraer párrafo introductorio
+      const descripcion = await noticiaPage.evaluate(() => {
+        const parrafos = [
+          ...document.querySelectorAll('p')
+        ]
+        .map(p => p.innerText.trim())
+        .filter(t =>
+          t.length > 80 &&
+          t.length < 400 &&
+          !t.includes('Youtube:') &&
+          !t.includes('Soundcloud:') &&
+          !t.includes('Twitter:') &&
+          !t.includes('Facebook:') &&
+          !t.includes('Instagram:') &&
+          !t.includes('TikTok:') &&
+          !t.includes('Issuu:') &&
+          !t.includes('Descarga boletín')
+        );
 
-      const datosInternos = await noticiaPage.evaluate(() => {
-        // SELECTORES EXCLUSIVOS PARA EL CMS "MI COLOMBIA DIGITAL"
-        // Buscamos las clases exactas donde esconden el título principal de la noticia
-        const elementoTitulo = document.querySelector('.title_page') || 
-                               document.querySelector('.title-page') ||
-                               document.querySelector('.heading-title') ||
-                               document.querySelector('.news-detail-title') ||
-                               document.querySelector('.container .title') ||
-                               document.querySelector('h1.title');
-        
-        let tituloReal = '';
-        if (elementoTitulo) {
-          tituloReal = elementoTitulo.innerText.trim();
-        } else {
-          // Si falla, intentamos extraer el texto del h1 o h2 más grande de la zona central
-          const h1Comun = document.querySelector('main h1') || document.querySelector('article h1') || document.querySelector('h1');
-          tituloReal = h1Comun ? h1Comun.innerText.trim() : '';
-        }
-
-        // Si el título capturado sigue siendo "Tunja, Boyacá", lo vaciamos para forzar el descarte de basura
-        if (tituloReal.toLowerCase() === 'tunja, boyacá' || tituloReal.toLowerCase() === 'tunja, boyaca') {
-          tituloReal = '';
-        }
-
-        // Extraer párrafos limpios para la descripción
-        const parrafos = [...document.querySelectorAll('p')]
-          .map(p => p.innerText.trim())
-          .filter(t =>
-            t.length > 60 &&
-            t.length < 500 &&
-            !t.toLowerCase().includes('youtube') &&
-            !t.toLowerCase().includes('twitter') &&
-            !t.toLowerCase().includes('facebook') &&
-            !t.toLowerCase().includes('instagram')
-          );
-
-        const descripcionReal = parrafos.find(t => t.includes('.') && t.split(' ').length > 6) || parrafos[0] || '';
-
-        return { tituloReal, descripcionReal };
+        // Buscar el primer párrafo válido REAL
+        return parrafos.find(t =>
+          t.includes('.') &&
+          t.split(' ').length > 10
+        ) || '';
       });
 
-      // Validar que el título sea legítimo y no la cabecera genérica
-      if (datosInternos.tituloReal && datosInternos.tituloReal.length > 10) {
-        noticiasFinal.push({
-          titulo: datosInternos.tituloReal.replace(/\s+/g, ' ').trim(),
-          enlace: item.enlace,
-          imagen: item.imagen,
-          descripcion: datosInternos.descripcionReal
-        });
-        console.log(`✔ Procesada: ${datosInternos.tituloReal.substring(0, 50)}...`);
-      }
+      noticiasFinal.push({
+        titulo: noticia.titulo,
+        enlace: noticia.enlace,
+        imagen: noticia.imagen,
+        descripcion: descripcion
+      });
 
-    } catch (err) {
-      console.log(`❌ Error en enlace: ${item.enlace}`);
-    } finally {
-      if (noticiaPage) await noticiaPage.close();
+      await noticiaPage.close();
+
+    } catch(err) {
+      console.log('Error noticia:', noticia.enlace, err.message);
     }
   }
 
-  // REPORTE FINAL
-  console.log('\n--- RESULTADO GENERAL ---');
-  console.log(`Total noticias procesadas correctamente: ${noticiasFinal.length}`);
+  // DEBUG
   console.log(JSON.stringify(noticiasFinal, null, 2));
 
-  // Enviar a Webhook de Apps Script
+  // Enviar a Apps Script
   if (process.env.WEBHOOK_URL && noticiasFinal.length > 0) {
-    try {
-      await fetch(process.env.WEBHOOK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(noticiasFinal)
-      });
-      console.log('¡Noticias enviadas correctamente al Google Sheet!');
-    } catch (e) {
-      console.log('Error enviando al Webhook:', e.message);
-    }
+    await fetch(process.env.WEBHOOK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(noticiasFinal)
+    });
+    console.log('Noticias enviadas correctamente');
+  } else {
+    console.log('No se enviaron datos (lista vacía o URL ausente)');
   }
 
   await browser.close();
+
 })();
