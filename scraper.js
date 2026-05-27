@@ -1,69 +1,59 @@
-
 const { chromium } = require('playwright');
 
 (async () => {
-
   const browser = await chromium.launch({
-    headless: true
+    headless: true // Cambiar a false si quieres ver el proceso en vivo
   });
 
   const page = await browser.newPage();
 
   // Abrir portal de noticias
-  await page.goto(
-    'https://www.tunja-boyaca.gov.co/tema/noticias',
-    {
-      waitUntil: 'networkidle'
+  await page.goto('https://www.tunja-boyaca.gov.co/tema/noticias', {
+    waitUntil: 'networkidle'
+  });
+
+  // Esperar carga inicial
+  await page.waitForTimeout(3000);
+
+  // ---- SECCIÓN OPTIMIZADA PARA CARGAR MÁS CONTENIDOS ----
+  const iteraciones = 5; // Cambia este número para cargar aún más noticias (ej. 5 clics = muchas más noticias)
+  
+  for (let i = 0; i < iteraciones; i++) {
+    try {
+      // Selector flexible que busca el botón por texto sin importar mayúsculas/minúsculas
+      const boton = page.getByRole('button', { name: /cargar más contenido/i });
+      
+      // Validar si el botón existe y es visible
+      if (await boton.count() > 0 && await boton.isVisible()) {
+        
+        // 1. Hacer scroll hasta el botón para asegurar que la web cargue los elementos
+        await boton.scrollIntoViewIfNeeded();
+        await page.waitForTimeout(1000); // Pausa breve post-scroll
+
+        // 2. Hacer clic de manera forzada si es necesario
+        await boton.click({ force: true });
+        console.log(`Botón cargar más pulsado (Iteración ${i + 1})`);
+
+        // 3. Esperar a que la red se estabilice y aparezcan las nuevas noticias
+        await page.waitForLoadState('networkidle');
+        await page.waitForTimeout(2500); 
+      } else {
+        console.log('El botón ya no está visible o no existe.');
+        break;
+      }
+    } catch (err) {
+      console.log('No se pudo presionar el botón en esta iteración:', err.message);
+      break;
     }
-  );
-
- // Esperar carga inicial
-await page.waitForTimeout(3000);
-
-// Pulsar varias veces el botón
-for (let i = 0; i < 3; i++) {
-
-  try {
-
-    // Buscar botón
-    const boton = await page.locator(
-      'text=CARGAR MÁS CONTENIDO'
-    );
-
-    // Si existe, hacer click
-    if (await boton.count() > 0) {
-
-      await boton.click();
-
-      console.log(
-        'Botón cargar más pulsado'
-      );
-
-      // Esperar nuevas noticias
-      await page.waitForTimeout(3000);
-
-    }
-
-  } catch(err) {
-
-    console.log(
-      'No hay más botón cargar contenido'
-    );
-
-    break;
-
   }
+  // --------------------------------------------------------
 
-}
-
-  // Obtener noticias base
+  // Obtener noticias base (Tu lógica se mantiene igual)
   const noticiasBase = await page.evaluate(() => {
-
     const usados = new Set();
 
     return [...document.querySelectorAll('a[href*="/noticias/"]')]
       .map(a => {
-
         const titulo = a.innerText
           .replace(/\n/g, ' ')
           .replace(/\r/g, ' ')
@@ -72,7 +62,6 @@ for (let i = 0; i < 3; i++) {
 
         const enlace = a.href;
 
-        // Buscar imagen cercana
         let img =
           a.querySelector('img') ||
           a.parentElement?.querySelector('img') ||
@@ -80,107 +69,56 @@ for (let i = 0; i < 3; i++) {
           a.parentElement?.parentElement?.parentElement?.querySelector('img');
 
         let imagen = '';
-
         if (img) {
-
-          imagen =
-            img.src ||
-            img.dataset.src ||
-            img.getAttribute('data-src') ||
-            '';
-
+          imagen = img.src || img.dataset.src || img.getAttribute('data-src') || '';
         }
 
-        return {
-          titulo,
-          enlace,
-          imagen
-        };
-
+        return { titulo, enlace, imagen };
       })
       .filter(n => {
-
-        // Validar enlace noticia
-        if (!n.enlace.includes('/noticias/'))
-          return false;
-
-        // Validar título
-        if (n.titulo.length < 10)
-          return false;
-
-        if (n.titulo.length > 180)
-          return false;
-
-        // Eliminar basura
-        if (
-          n.titulo.includes('Noticias') ||
-          n.titulo.includes('am') ||
-          n.titulo.includes('pm')
-        )
-          return false;
-
-        // Evitar duplicados
-        if (usados.has(n.enlace))
-          return false;
-
+        if (!n.enlace.includes('/noticias/')) return false;
+        if (n.titulo.length < 10 || n.titulo.length > 180) return false;
+        if (n.titulo.includes('Noticias') || n.titulo.includes('am') || n.titulo.includes('pm')) return false;
+        if (usados.has(n.enlace)) return false;
+        
         usados.add(n.enlace);
-
         return true;
-
       });
-
   });
+
+  console.log(`Total de noticias base encontradas: ${noticiasBase.length}`);
 
   const noticiasFinal = [];
 
   // Entrar a cada noticia
   for (const noticia of noticiasBase) {
-
     try {
-
       const noticiaPage = await browser.newPage();
+      await noticiaPage.goto(noticia.enlace, {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
+      });
 
-      await noticiaPage.goto(
-  noticia.enlace,
-  {
-    waitUntil: 'domcontentloaded',
-    timeout: 60000
-  }
-);
-
-await noticiaPage.waitForSelector('p', {
-  timeout: 15000
-});
-      // Extraer párrafo introductorio
+      await noticiaPage.waitForSelector('p', { timeout: 15000 });
+      
       const descripcion = await noticiaPage.evaluate(() => {
+        const parrafos = [...document.querySelectorAll('p')]
+          .map(p => p.innerText.trim())
+          .filter(t =>
+            t.length > 80 &&
+            t.length < 400 &&
+            !t.includes('Youtube:') &&
+            !t.includes('Soundcloud:') &&
+            !t.includes('Twitter:') &&
+            !t.includes('Facebook:') &&
+            !t.includes('Instagram:') &&
+            !t.includes('TikTok:') &&
+            !t.includes('Issuu:') &&
+            !t.includes('Descarga boletín')
+          );
 
-  const parrafos = [
-    ...document.querySelectorAll('p')
-  ]
-  .map(p => p.innerText.trim())
-  .filter(t =>
-
-    t.length > 80 &&
-    t.length < 400 &&
-
-    !t.includes('Youtube:') &&
-    !t.includes('Soundcloud:') &&
-    !t.includes('Twitter:') &&
-    !t.includes('Facebook:') &&
-    !t.includes('Instagram:') &&
-    !t.includes('TikTok:') &&
-    !t.includes('Issuu:') &&
-    !t.includes('Descarga boletín')
-
-  );
-
-  // Buscar el primer párrafo válido REAL
-  return parrafos.find(t =>
-    t.includes('.') &&
-    t.split(' ').length > 10
-  ) || '';
-
-});
+        return parrafos.find(t => t.includes('.') && t.split(' ').length > 10) || '';
+      });
 
       noticiasFinal.push({
         titulo: noticia.titulo,
@@ -190,43 +128,25 @@ await noticiaPage.waitForSelector('p', {
       });
 
       await noticiaPage.close();
-
-    } catch(err) {
-
-      console.log(
-        'Error noticia:',
-        noticia.enlace,
-        err
-      );
-
+    } catch (err) {
+      console.log('Error noticia:', noticia.enlace, err.message);
     }
-
   }
 
   // DEBUG
-  console.log(
-    JSON.stringify(
-      noticiasFinal,
-      null,
-      2
-    )
-  );
+  console.log(JSON.stringify(noticiasFinal, null, 2));
 
   // Enviar a Apps Script
-  await fetch(process.env.WEBHOOK_URL, {
-
-    method: 'POST',
-
-    headers: {
-      'Content-Type': 'application/json'
-    },
-
-    body: JSON.stringify(noticiasFinal)
-
-  });
-
-  console.log('Noticias enviadas correctamente');
+  if (process.env.WEBHOOK_URL) {
+    await fetch(process.env.WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(noticiasFinal)
+    });
+    console.log('Noticias enviadas correctamente');
+  } else {
+    console.log('WEBHOOK_URL no definida, omitiendo envío.');
+  }
 
   await browser.close();
-
 })();
