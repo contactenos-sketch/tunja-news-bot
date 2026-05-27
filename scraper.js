@@ -57,8 +57,8 @@ const { chromium } = require('playwright');
     }
   }
 
-  // ---- EXTRACCIÓN DE DATOS REESTRUCTURADA E INTELIGENTE ----
-  console.log('Extrayendo enlaces y títulos reales de noticias...');
+  // ---- EXTRACTOR AGRESIVO: FILTRADO Y LIMPIEZA DE FECHAS ----
+  console.log('Extrayendo y limpiando títulos de forma estricta...');
   
   const noticiasBase = await page.evaluate(() => {
     const usados = new Set();
@@ -70,69 +70,60 @@ const { chromium } = require('playwright');
     for (const a of todosLosEnlaces) {
       const enlace = a.href;
 
-      // Evitar duplicados en el mismo barrido
+      // Evitar duplicados
       if (usados.has(enlace)) continue;
 
-      // 1. Encontrar la tarjeta contenedora completa de la noticia
-      const tarjeta = a.closest('.card') || a.closest('[class*="item"]') || a.closest('div') || a.parentElement;
-      
-      let titulo = '';
+      // Capturar todo el texto que exista dentro del enlace o su tarjeta contenedora
+      const tarjeta = a.closest('.card') || a.closest('[class*="item"]') || a;
+      let textoCompleto = tarjeta.innerText || a.innerText || '';
 
-      // 2. Intentar buscar el título en las etiquetas jerárquicas reales dentro de esa tarjeta
-      if (tarjeta) {
-        const elementoTitulo = tarjeta.querySelector('h3') || 
-                               tarjeta.querySelector('h4') || 
-                               tarjeta.querySelector('.title') ||
-                               tarjeta.querySelector('[class*="titulo"]');
-        
-        if (elementoTitulo) {
-          titulo = elementoTitulo.innerText.trim();
-        }
+      // --- LIMPIEZA DE FECHAS MEDIANTE REGEX ---
+      // Este regex detecta patrones como: "24 de Mayo de 2026", "05 de Enero", "2026-05-12", etc.
+      const regexFechas = [
+        /\d{1,2}\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)[^\n\r]*/i,
+        /(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+\d{1,2}[^\n\r]*/i,
+        /\d{4}-\d{2}-\d{2}/g,
+        /\d{2}\/\d{2}\/\d{4}/g
+      ];
+
+      // Aplicamos los borradores de fechas sobre el texto
+      let tituloLimpio = textoCompleto;
+      for (const regex of regexFechas) {
+        tituloLimpio = tituloLimpio.replace(regex, '');
       }
 
-      // 3. Si no encontró h3/h4, usamos el texto del enlace pero limpiando fechas conocidas
-      if (!titulo) {
-        titulo = a.innerText.trim();
-      }
-
-      // Limpieza general de caracteres raros y espacios masivos
-      titulo = titulo
+      // Limpieza de palabras sueltas que introduce el CMS de Mi Colombia Digital
+      tituloLimpio = tituloLimpio
+        .replace(/compartir en/gi, '')
+        .replace(/leer más/gi, '')
+        .replace(/noticia/gi, '')
         .replace(/\n/g, ' ')
         .replace(/\r/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
 
-      // --- FILTRO ANTI-FECHAS Y BASURA ---
-      // Si el título es solo una fecha (ej: "15 de mayo" o "2026") o es muy corto, lo descartamos o ignoramos
-      const esSoloFecha = /^\d+.+de.+\d+$/i.test(titulo) || 
-                          /^(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i.test(titulo);
-      
-      if (esSoloFecha || titulo.length < 12) {
-        // Si lo que agarramos fue una fecha, intentamos un último recurso: buscar texto en los hermanos del enlace
-        const textoAlternativo = tarjeta?.innerText.replace(titulo, '').replace(/\s+/g, ' ').trim();
-        if (textoAlternativo && textoAlternativo.length > 15 && textoAlternativo.length < 250) {
-          titulo = textoAlternativo;
-        } else {
-          continue; // Si sigue siendo basura, saltamos al siguiente enlace
-        }
+      // Si después de borrar la fecha el título quedó vacío o ridículamente corto, saltamos
+      if (tituloLimpio.length < 15 || tituloLimpio.length > 250) {
+        continue;
       }
 
-      if (titulo.length > 250 || titulo.toLowerCase().includes('leer más')) continue;
-
-      // 4. Buscar la imagen dentro de la tarjeta
-      const img = tarjeta ? tarjeta.querySelector('img') : null;
+      // Buscar la imagen
+      const img = tarjeta.querySelector('img');
       let imagen = '';
       if (img) {
         imagen = img.src || img.dataset.src || img.getAttribute('data-src') || '';
       }
 
       usados.add(enlace);
-      listaNoticias.push({ titulo, enlace, imagen });
+      listaNoticias.push({ 
+        titulo: tituloLimpio, 
+        enlace, 
+        imagen 
+      });
     }
 
     return listaNoticias;
   });
-
   // ---- CONSUMO DE CADA NOTICIA INTERNA ----
   const noticiasFinal = [];
 
