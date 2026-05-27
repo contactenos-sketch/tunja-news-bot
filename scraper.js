@@ -115,30 +115,33 @@ const { chromium } = require('playwright');
       // Extraer párrafo introductorio
       const descripcion = await noticiaPage.evaluate(() => {
 
-        const parrafos = [
-          ...document.querySelectorAll('p')
-        ]
-        .map(p => p.innerText.trim())
-        .filter(t =>
+  const parrafos = [
+    ...document.querySelectorAll('p')
+  ]
+  .map(p => p.innerText.trim())
+  .filter(t =>
 
-          t.length > 50 &&
-          t.length < 500 &&
+    t.length > 80 &&
+    t.length < 400 &&
 
-          !t.includes('Youtube:') &&
-          !t.includes('Soundcloud:') &&
-          !t.includes('Twitter:') &&
-          !t.includes('Facebook:') &&
-          !t.includes('Instagram:') &&
-          !t.includes('TikTok:') &&
-          !t.includes('Issuu:') &&
-          !t.includes('Descarga boletín')
+    !t.includes('Youtube:') &&
+    !t.includes('Soundcloud:') &&
+    !t.includes('Twitter:') &&
+    !t.includes('Facebook:') &&
+    !t.includes('Instagram:') &&
+    !t.includes('TikTok:') &&
+    !t.includes('Issuu:') &&
+    !t.includes('Descarga boletín')
 
-        );
+  );
 
-        // Tomar el resumen introductorio
-        return parrafos[1] || parrafos[0] || '';
+  // Buscar el primer párrafo válido REAL
+  return parrafos.find(t =>
+    t.includes('.') &&
+    t.split(' ').length > 10
+  ) || '';
 
-      });
+});
 
       noticiasFinal.push({
         titulo: noticia.titulo,
