@@ -17,123 +17,128 @@ const { chromium } = require('playwright');
 
   await page.waitForTimeout(5000);
 
-  const noticias = await page.evaluate(() => {
+  // Obtener noticias básicas
+  const noticiasBase = await page.evaluate(() => {
 
     const usados = new Set();
 
-    const resultados = [];
+    return [...document.querySelectorAll('a[href*="/noticias/"]')]
+      .map(a => {
 
-    // Buscar posibles tarjetas de noticias
-    const cards = document.querySelectorAll(
-      'article, .card, .views-row, .news-item, .view-content > div'
-    );
+        const titulo = a.innerText
+          .replace(/\n/g, ' ')
+          .replace(/\r/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
 
-    cards.forEach(card => {
+        const enlace = a.href;
 
-      // Buscar enlace noticia
-      const link = card.querySelector('a[href*="/noticias/"]');
+        let img =
+          a.querySelector('img') ||
+          a.parentElement?.querySelector('img') ||
+          a.parentElement?.parentElement?.querySelector('img');
 
-      if (!link) return;
+        let imagen = '';
 
-      const enlace = link.href;
-
-      if (usados.has(enlace)) return;
-
-      usados.add(enlace);
-
-      // Buscar título
-      let titulo = '';
-
-      const posiblesTitulos = [
-        card.querySelector('h1'),
-        card.querySelector('h2'),
-        card.querySelector('h3'),
-        card.querySelector('h4'),
-        link
-      ];
-
-      for (const el of posiblesTitulos) {
-
-        if (el?.innerText?.trim()) {
-
-          titulo = el.innerText
-            .replace(/\n/g, ' ')
-            .replace(/\r/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim();
-
-          if (titulo.length > 10) break;
+        if (img) {
+          imagen =
+            img.src ||
+            img.dataset.src ||
+            img.getAttribute('data-src') ||
+            '';
         }
-      }
 
-      // Buscar descripción
-      let descripcion = '';
+        return {
+          titulo,
+          enlace,
+          imagen
+        };
 
-      const posiblesDescripciones = [
-        card.querySelector('p'),
-        card.querySelector('.summary'),
-        card.querySelector('.description'),
-        card.querySelector('.field-content'),
-        card.querySelector('.views-field-body')
-      ];
+      })
+      .filter(n => {
 
-      for (const el of posiblesDescripciones) {
+        if (!n.enlace.includes('/noticias/'))
+          return false;
 
-        if (el?.innerText?.trim()) {
+        if (n.titulo.length < 10)
+          return false;
 
-          descripcion = el.innerText
-            .replace(/\n/g, ' ')
-            .replace(/\r/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim();
+        if (n.titulo.length > 120)
+          return false;
 
-          if (
-            descripcion.length > 30 &&
-            descripcion !== titulo
-          ) {
-            break;
-          }
-        }
-      }
+        if (
+          n.titulo.includes('Noticias') ||
+          n.titulo.includes('am') ||
+          n.titulo.includes('pm')
+        )
+          return false;
 
-      // Buscar imagen
-      let imagen = '';
+        if (usados.has(n.enlace))
+          return false;
 
-      const img = card.querySelector('img');
+        usados.add(n.enlace);
 
-      if (img) {
+        return true;
 
-        imagen =
-          img.src ||
-          img.dataset.src ||
-          img.getAttribute('data-src') ||
-          '';
-      }
-
-      // Validaciones
-      if (!titulo) return;
-
-      resultados.push({
-        titulo,
-        enlace,
-        imagen,
-        descripcion
       });
-
-    });
-
-    return resultados;
 
   });
 
-  console.log(noticias);
+  // Entrar a cada noticia y sacar primer párrafo
+  const noticiasFinal = [];
+
+  for (const noticia of noticiasBase) {
+
+    try {
+
+      const noticiaPage = await browser.newPage();
+
+      await noticiaPage.goto(noticia.enlace, {
+        waitUntil: 'networkidle'
+      });
+
+      await noticiaPage.waitForTimeout(3000);
+
+      const descripcion = await noticiaPage.evaluate(() => {
+
+        // Buscar párrafos reales del contenido
+        const parrafos = [
+          ...document.querySelectorAll('p')
+        ]
+        .map(p => p.innerText.trim())
+        .filter(t =>
+          t.length > 50 &&
+          t.length < 500
+        );
+
+        return parrafos[0] || '';
+
+      });
+
+      noticia.descripcion = descripcion;
+
+      noticiasFinal.push(noticia);
+
+      await noticiaPage.close();
+
+    } catch(err) {
+
+      console.log(
+        'Error noticia:',
+        noticia.enlace
+      );
+
+    }
+  }
+
+  console.log(noticiasFinal);
 
   await fetch(process.env.WEBHOOK_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(noticias)
+    body: JSON.stringify(noticiasFinal)
   });
 
   await browser.close();
