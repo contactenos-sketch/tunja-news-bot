@@ -2,7 +2,6 @@ name: Tunja News Scraper
 
 on:
   schedule:
-    - cron: '0 * * * *'
 
   workflow_dispatch:
 
