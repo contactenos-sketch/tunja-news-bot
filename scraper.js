@@ -3,180 +3,139 @@ const { chromium } = require('playwright');
 (async () => {
 
   const browser = await chromium.launch({
-    headless: true
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
 
-  const page = await browser.newPage();
-
-  // Abrir portal de noticias
-  await page.goto(
-    'https://www.tunja-boyaca.gov.co/tema/noticias',
-    {
-      waitUntil: 'networkidle'
-    }
-  );
-
-  // Esperar carga inicial
-  await page.waitForTimeout(3000);
-
-  // Pulsar varias veces el botón (Tu lógica original intacta)
-  for (let i = 0; i < 3; i++) {
-    try {
-      // Buscar botón
-      const boton = await page.locator('text=CARGAR MÁS CONTENIDO');
-
-      // Si existe, hacer click
-      if (await boton.count() > 0) {
-        await boton.click();
-        console.log('Botón cargar más pulsado');
-        
-        // Esperar nuevas noticias
-        await page.waitForTimeout(3000);
-      }
-    } catch(err) {
-      console.log('No hay más botón cargar contenido');
-      break;
-    }
-  }
-
-  // Obtener noticias base
-  const noticiasBase = await page.evaluate(() => {
-
-    const usados = new Set();
-
-    return [...document.querySelectorAll('a[href*="/noticias/"]')]
-      .map(a => {
-        let titulo = a.innerText
-          .replace(/\n/g, ' ')
-          .replace(/\r/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim();
-
-        const enlace = a.href;
-
-        // --- SOLUCIÓN AL PROBLEMA DE LAS FECHAS Y ENLACES VACÍOS ---
-        // Si el enlace no tiene texto, o si es una fecha (ej. "27 de Mayo"), 
-        // buscamos el título real en el bloque h3 o h4 más cercano de la tarjeta.
-        if (titulo.length < 10 || /^\d/.test(titulo) || /de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i.test(titulo)) {
-          const contenedor = a.closest('.card') || a.parentElement?.parentElement || a;
-          const hReal = contenedor.querySelector('h3') || contenedor.querySelector('h4') || contenedor.querySelector('[class*="titulo"]');
-          if (hReal) {
-            titulo = hReal.innerText.replace(/\s+/g, ' ').trim();
-          }
-        }
-
-        // Buscar imagen cercana
-        let img =
-          a.querySelector('img') ||
-          a.parentElement?.querySelector('img') ||
-          a.parentElement?.parentElement?.querySelector('img') ||
-          a.parentElement?.parentElement?.parentElement?.querySelector('img');
-
-        let imagen = '';
-        if (img) {
-          imagen = img.src || img.dataset.src || img.getAttribute('data-src') || '';
-        }
-
-        return { titulo, enlace, imagen };
-      })
-      .filter(n => {
-        // Validar enlace noticia
-        if (!n.enlace.includes('/noticias/')) return false;
-
-        // Validar título (Aumentamos a 250 porque las viejas tienen títulos más largos)
-        if (n.titulo.length < 10) return false;
-        if (n.titulo.length > 250) return false;
-
-        // --- CORRECCIÓN CRUCIAL DE FILTROS ---
-        if (n.titulo.includes('Noticias') || n.titulo.toLowerCase() === 'tunja, boyacá') return false;
-        
-        // Reemplazamos el "includes('am')" ciego por una validación que solo busque la hora real " am " o " pm " aislada
-        if (/\b(am|pm)\b/i.test(n.titulo)) return false;
-
-        // Evitar duplicados
-        if (usados.has(n.enlace)) return false;
-        usados.add(n.enlace);
-
-        return true;
-      });
-
+  // Crear contexto con User-Agent real para evitar bloqueos
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   });
 
-  const noticiasFinal = [];
+  const page = await context.newPage();
 
-  // Entrar a cada noticia (Tu lógica original intacta)
-  for (const noticia of noticiasBase) {
-    try {
-      const noticiaPage = await browser.newPage();
-      await noticiaPage.goto(
-        noticia.enlace,
-        {
-          waitUntil: 'domcontentloaded',
-          timeout: 60000
-        }
-      );
-
-      await noticiaPage.waitForSelector('p', {
-        timeout: 15000
-      });
-
-      // Extraer párrafo introductorio
-      const descripcion = await noticiaPage.evaluate(() => {
-        const parrafos = [
-          ...document.querySelectorAll('p')
-        ]
-        .map(p => p.innerText.trim())
-        .filter(t =>
-          t.length > 80 &&
-          t.length < 400 &&
-          !t.includes('Youtube:') &&
-          !t.includes('Soundcloud:') &&
-          !t.includes('Twitter:') &&
-          !t.includes('Facebook:') &&
-          !t.includes('Instagram:') &&
-          !t.includes('TikTok:') &&
-          !t.includes('Issuu:') &&
-          !t.includes('Descarga boletín')
-        );
-
-        // Buscar el primer párrafo válido REAL
-        return parrafos.find(t =>
-          t.includes('.') &&
-          t.split(' ').length > 10
-        ) || '';
-      });
-
-      noticiasFinal.push({
-        titulo: noticia.titulo,
-        enlace: noticia.enlace,
-        imagen: noticia.imagen,
-        descripcion: descripcion
-      });
-
-      await noticiaPage.close();
-
-    } catch(err) {
-      console.log('Error noticia:', noticia.enlace, err.message);
-    }
-  }
-
-  // DEBUG
-  console.log(JSON.stringify(noticiasFinal, null, 2));
-
-  // Enviar a Apps Script
-  if (process.env.WEBHOOK_URL && noticiasFinal.length > 0) {
-    await fetch(process.env.WEBHOOK_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(noticiasFinal)
+  try {
+    // 1. Navegación usando domcontentloaded para evitar colapsar por red
+    await page.goto('https://www.tunja-boyaca.gov.co/tema/noticias', {
+      waitUntil: 'domcontentloaded',
+      timeout: 45000
     });
-    console.log('Noticias enviadas correctamente');
-  } else {
-    console.log('No se enviaron datos (lista vacía o URL ausente)');
+
+    await page.waitForTimeout(2000);
+
+    // 2. Hacer click en "CARGAR MÁS CONTENIDO"
+    for (let i = 0; i < 3; i++) {
+      try {
+        const boton = page.locator('text=CARGAR MÁS CONTENIDO');
+        if (await boton.isVisible()) {
+          await boton.click();
+          console.log(`Botón cargar más pulsado (${i + 1}/3)`);
+          await page.waitForTimeout(2000);
+        } else {
+          break;
+        }
+      } catch (err) {
+        console.log('No hay más botón de carga disponible');
+        break;
+      }
+    }
+
+    // 3. Extracción de la lista base
+    const noticiasBase = await page.evaluate(() => {
+      const usados = new Set();
+
+      return [...document.querySelectorAll('a[href*="/noticias/"]')]
+        .map(a => {
+          let titulo = a.innerText.replace(/\s+/g, ' ').trim();
+          const enlace = a.href;
+
+          if (titulo.length < 10 || /^\d/.test(titulo) || /de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i.test(titulo)) {
+            const contenedor = a.closest('.card') || a.parentElement?.parentElement || a;
+            const hReal = contenedor.querySelector('h3') || contenedor.querySelector('h4') || contenedor.querySelector('[class*="titulo"]');
+            if (hReal) {
+              titulo = hReal.innerText.replace(/\s+/g, ' ').trim();
+            }
+          }
+
+          let img = a.querySelector('img') ||
+                    a.parentElement?.querySelector('img') ||
+                    a.parentElement?.parentElement?.querySelector('img');
+
+          let imagen = img ? (img.src || img.dataset.src || img.getAttribute('data-src') || '') : '';
+
+          return { titulo, enlace, imagen };
+        })
+        .filter(n => {
+          if (!n.enlace.includes('/noticias/')) return false;
+          if (n.titulo.length < 10 || n.titulo.length > 250) return false;
+          if (n.titulo.includes('Noticias') || n.titulo.toLowerCase() === 'tunja, boyacá') return false;
+          if (/\b(am|pm)\b/i.test(n.titulo)) return false;
+
+          if (usados.has(n.enlace)) return false;
+          usados.add(n.enlace);
+
+          return true;
+        });
+    });
+
+    console.log(`Noticias encontradas para procesar: ${noticiasBase.length}`);
+
+    // 4. Extracción de descripciones (limitado a máximo 10 noticias para acelerar)
+    const noticiasFinal = [];
+    const listaNoticias = noticiasBase.slice(0, 10);
+
+    for (const noticia of listaNoticias) {
+      let noticiaPage;
+      try {
+        noticiaPage = await context.newPage();
+        await noticiaPage.goto(noticia.enlace, {
+          waitUntil: 'domcontentloaded',
+          timeout: 20000 // Reducido a 20s para no congelar el workflow
+        });
+
+        const descripcion = await noticiaPage.evaluate(() => {
+          const parrafos = [...document.querySelectorAll('p')]
+            .map(p => p.innerText.trim())
+            .filter(t =>
+              t.length > 80 &&
+              t.length < 400 &&
+              !/Youtube:|Soundcloud:|Twitter:|Facebook:|Instagram:|TikTok:|Issuu:|Descarga boletín/i.test(t)
+            );
+
+          return parrafos.find(t => t.includes('.') && t.split(' ').length > 10) || '';
+        });
+
+        noticiasFinal.push({
+          titulo: noticia.titulo,
+          enlace: noticia.enlace,
+          imagen: noticia.imagen,
+          descripcion: descripcion
+        });
+
+      } catch (err) {
+        console.log(`Error al procesar noticia ${noticia.enlace}:`, err.message);
+      } finally {
+        if (noticiaPage) await noticiaPage.close();
+      }
+    }
+
+    console.log(`Procesadas exitosamente: ${noticiasFinal.length}`);
+
+    // 5. Envío al Webhook
+    if (process.env.WEBHOOK_URL && noticiasFinal.length > 0) {
+      const response = await fetch(process.env.WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(noticiasFinal)
+      });
+      console.log(`Noticias enviadas. Estado HTTP: ${response.status}`);
+    } else {
+      console.log('No se enviaron datos (lista vacía o falta la variable WEBHOOK_URL)');
+    }
+
+  } catch (errorGeneral) {
+    console.error('Error general en el flujo:', errorGeneral.message);
+  } finally {
+    await browser.close();
   }
-
-  await browser.close();
-
 })();
