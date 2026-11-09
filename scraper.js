@@ -10,7 +10,6 @@ import { chromium } from 'playwright';
     ]
   });
 
-  // Contexto simulando un navegador Chrome real en Windows
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     viewport: { width: 1366, height: 768 },
@@ -20,29 +19,37 @@ import { chromium } from 'playwright';
 
   const page = await context.newPage();
 
-  // Ocultar banderas de automatización frente al servidor
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => false });
   });
 
   try {
-    console.log('1. Navegando a la lista de noticias...');
-    const response = await page.goto('https://www.tunja-boyaca.gov.co/tema/noticias', {
-      waitUntil: 'domcontentloaded',
-      timeout: 60000
-    });
+    console.log('1. Navegando a la sección de noticias...');
 
-    console.log(`Estado de respuesta HTTP: ${response ? response.status() : 'Sin respuesta'}`);
+    // Rutas alternativas en caso de redirección al Home
+    const urlsPrueba = [
+      'https://www.tunja-boyaca.gov.co/noticias',
+      'https://www.tunja-boyaca.gov.co/tema/noticias',
+      'https://www.tunja-boyaca.gov.co/transparencia/prensa/noticias'
+    ];
 
-    // Esperar explícitamente a que carguen los enlaces en la página
-    try {
-      await page.waitForSelector('a[href*="/noticias/"]', { timeout: 10000 });
-      console.log('Selector de enlaces detectado correctamente.');
-    } catch (e) {
-      console.log('Timeout: El selector a[href*="/noticias/"] no apareció a tiempo.');
+    let navegacionExitosa = false;
+    for (const url of urlsPrueba) {
+      console.log(`Intentando acceder a: ${url}`);
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(2000);
+
+      const titulo = await page.title();
+      console.log(`  -> Título actual: "${titulo}"`);
+
+      // Verificar si no nos mandó a la portada genérica
+      if (!titulo.includes('entidad del sector público') || url.includes('/noticias')) {
+        navegacionExitosa = true;
+        break;
+      }
     }
 
-    // Intentar presionar el botón "Cargar más"
+    // Intentar hacer click en "CARGAR MÁS" si existe
     for (let i = 0; i < 3; i++) {
       try {
         const boton = page.locator('text=CARGAR MÁS CONTENIDO');
@@ -58,22 +65,27 @@ import { chromium } from 'playwright';
       }
     }
 
-    // 2. Extracción de noticias base
-    console.log('2. Extrayendo enlaces de noticias...');
+    // 2. Extracción de enlaces con selectores ampliados (Drupal / MiColombiaDigital)
+    console.log('2. Extrayendo noticias base...');
     const noticiasBase = await page.evaluate(() => {
       const usados = new Set();
+      
+      // Capturar cualquier enlace relativo/absoluto que apunte a noticias o artículos
+      const candidatos = [
+        ...document.querySelectorAll('a[href*="/noticias/"]'),
+        ...document.querySelectorAll('a[href*="/noticia/"]'),
+        ...document.querySelectorAll('.card a'),
+        ...document.querySelectorAll('.views-row a')
+      ];
 
-      // Busca enlaces que contengan /noticias/ o estén dentro del bloque principal de artículos
-      const enlaces = [...document.querySelectorAll('a[href*="/noticias/"]')];
-
-      return enlaces
+      return candidatos
         .map(a => {
           let titulo = a.innerText.replace(/\s+/g, ' ').trim();
           const enlace = a.href;
 
           if (titulo.length < 10 || /de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i.test(titulo)) {
-            const contenedor = a.closest('.card') || a.parentElement?.parentElement || a;
-            const hReal = contenedor.querySelector('h3, h4, h2, [class*="titulo"]');
+            const contenedor = a.closest('.card') || a.closest('.views-row') || a.parentElement?.parentElement || a;
+            const hReal = contenedor.querySelector('h3, h4, h2, [class*="titulo"], .field--name-title');
             if (hReal) titulo = hReal.innerText.replace(/\s+/g, ' ').trim();
           }
 
@@ -83,27 +95,26 @@ import { chromium } from 'playwright';
           return { titulo, enlace, imagen };
         })
         .filter(n => {
-          if (!n.enlace.includes('/noticias/')) return false;
+          if (!n.enlace || !n.enlace.includes('tunja-boyaca.gov.co')) return false;
+          if (!n.enlace.includes('/noticias/') && !n.enlace.includes('/noticia/')) return false;
           if (n.titulo.length < 10 || n.titulo.length > 250) return false;
           if (n.titulo.includes('Noticias') || n.titulo.toLowerCase() === 'tunja, boyacá') return false;
+          
           if (usados.has(n.enlace)) return false;
           usados.add(n.enlace);
           return true;
         });
     });
 
-    console.log(`Total noticias base encontradas: ${noticiasBase.length}`);
+    console.log(`Total noticias encontradas: ${noticiasBase.length}`);
 
     if (!noticiasBase || noticiasBase.length === 0) {
-      console.log('No se encontraron noticias. Tomando captura para diagnóstico...');
-      // Muestra el título de la página abierta para verificar si fue bloqueada por Cloudflare / 403
-      const tituloPagina = await page.title();
-      console.log(`Título de la página cargada: "${tituloPagina}"`);
+      console.log('No se encontraron noticias. Verifica las URLs o selectores.');
       await browser.close();
       return;
     }
 
-    // 3. Extracción de descripciones
+    // 3. Extraer descripciones visitando cada noticia
     const noticiasFinal = [];
     const listaNoticias = noticiasBase.slice(0, 10);
 
@@ -116,17 +127,17 @@ import { chromium } from 'playwright';
           timeout: 30000
         });
 
-        try {
-          await page.waitForSelector('.field--name-body, article, .contenido-noticia, p', { timeout: 4000 });
-        } catch (e) {}
+        await page.waitForTimeout(1500);
 
         const descripcion = await page.evaluate(() => {
+          // 1. Metaetiquetas
           const metaOg = document.querySelector('meta[property="og:description"]')?.content;
           if (metaOg && metaOg.trim().length > 20) return metaOg.trim();
 
           const metaDesc = document.querySelector('meta[name="description"]')?.content;
           if (metaDesc && metaDesc.trim().length > 20) return metaDesc.trim();
 
+          // 2. Cuerpo del artículo
           const contenedores = [
             document.querySelector('.field--name-body'),
             document.querySelector('.field--name-field-lead'),
@@ -137,10 +148,10 @@ import { chromium } from 'playwright';
 
           for (const c of contenedores) {
             if (!c) continue;
-            const elementos = [...c.querySelectorAll('p, div.field__item, div')]
+            const elementos = [...c.querySelectorAll('p, div.field__item')]
               .map(el => el.innerText.replace(/\s+/g, ' ').trim())
               .filter(t =>
-                t.length > 40 &&
+                t.length > 30 &&
                 t.length < 600 &&
                 !/Youtube:|Soundcloud:|Twitter:|Facebook:|Instagram:|TikTok:|Descarga|Boletín/i.test(t)
               );
@@ -148,9 +159,7 @@ import { chromium } from 'playwright';
             if (elementos.length > 0) return elementos[0];
           }
 
-          const textoGeneral = document.body.innerText.replace(/\s+/g, ' ').trim();
-          const frases = textoGeneral.split(/\.\s+/).filter(f => f.length > 40 && f.length < 300);
-          return frases.length > 0 ? (frases[0] + '.') : '';
+          return '';
         });
 
         console.log(`-> Descripción: "${descripcion.substring(0, 50)}..."`);
@@ -167,9 +176,9 @@ import { chromium } from 'playwright';
       }
     }
 
-    console.log(`Procesadas exitosamente: ${noticiasFinal.length}`);
+    console.log(`Noticias procesadas exitosamente: ${noticiasFinal.length}`);
 
-    // 4. Envío al Webhook de Google Apps Script
+    // 4. Enviar al Webhook
     const webhookUrl = process.env.WEBHOOK_URL;
     if (webhookUrl && noticiasFinal.length > 0) {
       const resp = await fetch(webhookUrl, {
@@ -177,9 +186,9 @@ import { chromium } from 'playwright';
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(noticiasFinal)
       });
-      console.log(`Noticias enviadas. Estado HTTP del Webhook: ${resp.status}`);
+      console.log(`Webhook llamado. Estado HTTP: ${resp.status}`);
     } else {
-      console.log('No se enviaron datos (lista vacía o la variable WEBHOOK_URL no está configurada).');
+      console.log('No se enviaron datos (lista vacía o WEBHOOK_URL no configurada).');
     }
 
   } catch (errGen) {
