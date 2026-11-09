@@ -14,7 +14,7 @@ import { chromium } from 'playwright';
   const page = await context.newPage();
 
   try {
-    console.log('1. Navegando al enlace de noticias oficial...');
+    console.log('1. Navegando al portal de noticias...');
 
     await page.goto('https://www.tunja-boyaca.gov.co/tema/noticias', {
       waitUntil: 'networkidle',
@@ -23,94 +23,106 @@ import { chromium } from 'playwright';
 
     await page.waitForTimeout(3000);
 
-    // 2. Extraer los enlaces de las noticias
+    // 2. Extraer lista base con título limpio e imagen completa
     const noticiasBase = await page.evaluate(() => {
       const usados = new Set();
-      
-      const enlaces = [...document.querySelectorAll('a')].filter(a => {
-        const href = a.href || '';
-        return href.includes('/noticias/') && !href.endsWith('/tema/noticias');
-      });
+      const enlaces = [...document.querySelectorAll('a[href*="/noticias/"]')];
 
       return enlaces.map(a => {
-        let titulo = a.innerText.replace(/\s+/g, ' ').trim();
+        const contenedor = a.closest('.card') || a.closest('.views-row') || a.parentElement?.parentElement || a;
+
+        // Extraer el título directamente del encabezado
+        const hReal = contenedor.querySelector('h3, h4, h2, [class*="titulo"], .field--name-title');
+        let titulo = hReal ? hReal.innerText : a.innerText;
+
+        // Limpiar saltos de línea y textos residuales como "Noticia hace X días"
+        titulo = titulo.replace(/\s+/g, ' ').trim();
+        titulo = titulo.replace(/^Noticia\s+hace\s+\d+\s+días\s*/i, '');
+        titulo = titulo.replace(/^Noticia\s+hace\s+\d+\s+horas\s*/i, '');
+
         const enlace = a.href;
 
-        if (titulo.length < 10) {
-          const card = a.closest('.card, .views-row, .item, div');
-          const heading = card?.querySelector('h1, h2, h3, h4, .titulo');
-          if (heading) titulo = heading.innerText.replace(/\s+/g, ' ').trim();
+        // Buscar la imagen en el contenedor
+        let img = contenedor.querySelector('img') || a.querySelector('img');
+        let imagen = '';
+        if (img) {
+          imagen = img.src || img.getAttribute('data-src') || img.dataset.src || '';
         }
-
-        let img = a.querySelector('img') || a.parentElement?.querySelector('img');
-        let imagen = img ? (img.src || img.getAttribute('data-src') || '') : '';
 
         return { titulo, enlace, imagen };
       }).filter(n => {
-        if (n.titulo.length < 10 || usados.has(n.enlace)) return false;
+        if (!n.enlace || n.enlace.endsWith('/tema/noticias')) return false;
+        if (n.titulo.length < 10 || n.titulo.includes('CARGAR MÁS')) return false;
+        if (usados.has(n.enlace)) return false;
         usados.add(n.enlace);
         return true;
       });
     });
 
-    console.log(`Noticias encontradas en la página: ${noticiasBase.length}`);
+    console.log(`Noticias encontradas: ${noticiasBase.length}`);
 
-    // 3. Extraer la descripción del cuerpo de la noticia
+    // 3. Extraer el TEXTO COMPLETO de cada noticia
     const noticiasFinal = [];
     for (const noticia of noticiasBase.slice(0, 10)) {
       try {
-        console.log(`Procesando: ${noticia.enlace}`);
-        await page.goto(noticia.enlace, { waitUntil: 'domcontentloaded', timeout: 25000 });
+        console.log(`Procesando contenido completo: ${noticia.enlace}`);
+        await page.goto(noticia.enlace, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForTimeout(1500);
 
-        const descripcion = await page.evaluate(() => {
-          // ESTRATEGIA 1: Metaetiqueta OpenGraph (og:description)
-          const metaOg = document.querySelector('meta[property="og:description"]')?.content;
-          if (metaOg && metaOg.trim().length > 25 && !metaOg.includes('La alcaldía de Tunja es una entidad')) {
-            return metaOg.trim();
+        const detalle = await page.evaluate(() => {
+          // Si la imagen no venía desde la lista, intentamos capturarla dentro de la página del artículo
+          const imgArticulo = document.querySelector('article img, .field--name-body img, meta[property="og:image"]');
+          let imagenDetalle = '';
+          if (imgArticulo) {
+            imagenDetalle = imgArticulo.content || imgArticulo.src || imgArticulo.getAttribute('data-src') || '';
           }
 
-          // ESTRATEGIA 2: Párrafos dentro del contenedor del artículo
+          // Seleccionar el contenedor principal del texto
           const contenedor = document.querySelector('.field--name-body') || 
                              document.querySelector('.node__content') || 
                              document.querySelector('article') || 
                              document.body;
 
+          // Extraer TODOS los párrafos con contenido real
           const parrafos = [...contenedor.querySelectorAll('p, div.field__item')]
             .map(p => p.innerText.replace(/\s+/g, ' ').trim())
             .filter(texto => {
-              if (texto.length < 40) return false;
+              if (texto.length < 20) return false;
               if (texto.includes('La alcaldía de Tunja es una entidad')) return false;
-              if (/Youtube|Twitter|Facebook|Boletín|Derechos reservados/i.test(texto)) return false;
+              if (/Youtube|Twitter|Facebook|Boletín|Derechos reservados|Compartir/i.test(texto)) return false;
               return true;
             });
 
-          if (parrafos.length > 0) return parrafos[0];
+          // Unir todos los párrafos encontrados con saltos de línea doble para conservar el texto completo
+          const textoCompleto = parrafos.join('\n\n');
 
-          // ESTRATEGIA 3: Fallback de texto libre (extrae la primera frase con sentido si no hay párrafos estándar)
-          const textoCompleto = contenedor.innerText.replace(/\s+/g, ' ').trim();
-          const frases = textoCompleto.split(/\.\s+/).filter(f => f.length > 40 && f.length < 300);
-          return frases.length > 0 ? (frases[0] + '.') : 'Descripción no disponible';
+          return {
+            textoCompleto: textoCompleto || 'Sin contenido de texto disponible.',
+            imagen: imagenDetalle
+          };
         });
 
-        // Muestra en consola hasta 80 caracteres para verificar que traiga texto real
-        console.log(`  -> Desc: "${descripcion.substring(0, 80)}..."`);
+        const imagenFinal = noticia.imagen || detalle.imagen;
+
+        console.log(`  -> Título: "${noticia.titulo.substring(0, 40)}..."`);
+        console.log(`  -> Imagen URL: ${imagenFinal ? 'Encontrada' : 'No encontrada'}`);
+        console.log(`  -> Longitud texto: ${detalle.textoCompleto.length} caracteres`);
 
         noticiasFinal.push({
           titulo: noticia.titulo,
           enlace: noticia.enlace,
-          imagen: noticia.imagen,
-          descripcion: descripcion
+          imagen: imagenFinal,
+          descripcion: detalle.textoCompleto // Envía la noticia completa sin recortar
         });
 
       } catch (err) {
-        console.log(`Error abriendo ${noticia.enlace}: ${err.message}`);
+        console.log(`Error al abrir ${noticia.enlace}: ${err.message}`);
       }
     }
 
-    console.log(`Total final procesadas: ${noticiasFinal.length}`);
+    console.log(`Noticias procesadas exitosamente: ${noticiasFinal.length}`);
 
-    // 4. Enviar datos al Webhook de Google Apps Script
+    // 4. Enviar datos completos al Webhook
     const webhookUrl = process.env.WEBHOOK_URL;
     if (webhookUrl && noticiasFinal.length > 0) {
       const res = await fetch(webhookUrl, {
@@ -119,10 +131,12 @@ import { chromium } from 'playwright';
         body: JSON.stringify(noticiasFinal)
       });
       console.log(`Estado HTTP de Apps Script: ${res.status}`);
+    } else {
+      console.log('No se envió información (WEBHOOK_URL vacía o no hay datos).');
     }
 
   } catch (error) {
-    console.error('Error durante la ejecución:', error.message);
+    console.error('Error en el proceso general:', error.message);
   } finally {
     await browser.close();
   }
