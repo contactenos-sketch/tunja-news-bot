@@ -1,77 +1,4 @@
-const { chromium } = require('playwright');
-
-(async () => {
-  const browser = await chromium.launch({
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-blink-features=AutomationControlled' // Evita detección básica de bots
-    ]
-  });
-
-  const context = await browser.newContext({
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 720 }
-  });
-
-  const page = await context.newPage();
-
-  try {
-    console.log('Navegando a la lista de noticias...');
-    await page.goto('https://www.tunja-boyaca.gov.co/tema/noticias', {
-      waitUntil: 'networkidle', // Espera a que la red se estabilice
-      timeout: 60000
-    });
-
-    // 1. Cargar más noticias
-    for (let i = 0; i < 3; i++) {
-      try {
-        const boton = page.locator('text=CARGAR MÁS CONTENIDO');
-        if (await boton.isVisible()) {
-          await boton.click();
-          console.log(`Cargando más contenido (${i + 1}/3)...`);
-          await page.waitForTimeout(2500);
-        } else {
-          break;
-        }
-      } catch (err) {
-        break;
-      }
-    }
-
-    // 2. Extraer enlaces base
-    const noticiasBase = await page.evaluate(() => {
-      const usados = new Set();
-      return [...document.querySelectorAll('a[href*="/noticias/"]')]
-        .map(a => {
-          let titulo = a.innerText.replace(/\s+/g, ' ').trim();
-          const enlace = a.href;
-
-          if (titulo.length < 10 || /de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i.test(titulo)) {
-            const contenedor = a.closest('.card') || a.parentElement?.parentElement || a;
-            const hReal = contenedor.querySelector('h3, h4, h2, [class*="titulo"]');
-            if (hReal) titulo = hReal.innerText.replace(/\s+/g, ' ').trim();
-          }
-
-          let img = a.querySelector('img') || a.parentElement?.querySelector('img') || a.parentElement?.parentElement?.querySelector('img');
-          let imagen = img ? (img.src || img.dataset.src || img.getAttribute('data-src') || '') : '';
-
-          return { titulo, enlace, imagen };
-        })
-        .filter(n => {
-          if (!n.enlace.includes('/noticias/')) return false;
-          if (n.titulo.length < 10 || n.titulo.length > 250) return false;
-          if (n.titulo.includes('Noticias') || n.titulo.toLowerCase() === 'tunja, boyacá') return false;
-          if (usados.has(n.enlace)) return false;
-          usados.add(n.enlace);
-          return true;
-        });
-    });
-
-    console.log(`Noticias encontradas: ${noticiasBase.length}`);
-
-    // 3. Extracción de descripciones usando la MISMA pestaña (evita bloqueos)
+// 4. Extracción de descripciones con espera activa de selector
     const noticiasFinal = [];
     const listaNoticias = noticiasBase.slice(0, 10);
 
@@ -79,63 +6,59 @@ const { chromium } = require('playwright');
       try {
         console.log(`Procesando: ${noticia.enlace}`);
         
-        // Reutilizar la página en lugar de abrir contextos nuevos constantemente
-        const response = await page.goto(noticia.enlace, {
+        await page.goto(noticia.enlace, {
           waitUntil: 'domcontentloaded',
-          timeout: 25000
+          timeout: 30000
         });
 
-        // Verificar status HTTP
-        if (response && response.status() >= 400) {
-          console.log(`Error HTTP ${response.status()} en ${noticia.enlace}`);
-          continue;
+        // ESPERA ACTIVA: Esperar hasta 4 segundos a que aparezca alguno de los contenedores de texto de Drupal
+        try {
+          await page.waitForSelector('.field--name-body, article, .contenido-noticia, p', { timeout: 4000 });
+        } catch (e) {
+          // Si no aparece a tiempo, continúa con el intento de extracción en DOM
         }
 
-        await page.waitForTimeout(1500);
-
         const descripcion = await page.evaluate(() => {
-          // ESTRATEGIA 1: Metaetiquetas OpenGraph o Description
+          // 1. Intentar metaetiqueta og:description
           const metaOg = document.querySelector('meta[property="og:description"]')?.content;
           if (metaOg && metaOg.trim().length > 20) return metaOg.trim();
 
           const metaDesc = document.querySelector('meta[name="description"]')?.content;
           if (metaDesc && metaDesc.trim().length > 20) return metaDesc.trim();
 
-          // ESTRATEGIA 2: Párrafos dentro del contenedor de contenido de la alcaldía
-          const selectors = [
-            '.field--name-body', 
-            '.node__content', 
-            '.articulo-contenido', 
-            'article', 
-            'main'
+          // 2. Buscar en los contenedores de texto específicos del CMS MiColombiaDigital / Drupal
+          const contenedores = [
+            document.querySelector('.field--name-body'),
+            document.querySelector('.field--name-field-lead'),
+            document.querySelector('article'),
+            document.querySelector('.node__content'),
+            document.body
           ];
-          
-          let contenedor = null;
-          for (const s of selectors) {
-            contenedor = document.querySelector(s);
-            if (contenedor) break;
-          }
-          if (!contenedor) contenedor = document.body;
 
-          const parrafos = [...contenedor.querySelectorAll('p, div')]
-            .map(el => el.innerText.replace(/\s+/g, ' ').trim())
-            .filter(t => 
-              t.length > 40 && 
-              t.length < 500 &&
-              !/Youtube:|Soundcloud:|Twitter:|Facebook:|Instagram:|TikTok:|Descarga|Compartir/i.test(t)
-            );
+          for (const c of contenedores) {
+            if (!c) continue;
 
-          if (parrafos.length > 0) {
-            return parrafos[0];
+            // Buscar párrafos o divs con texto significativo
+            const elementos = [...c.querySelectorAll('p, div.field__item, div')]
+              .map(el => el.innerText.replace(/\s+/g, ' ').trim())
+              .filter(t => 
+                t.length > 40 && 
+                t.length < 600 &&
+                !/Youtube:|Soundcloud:|Twitter:|Facebook:|Instagram:|TikTok:|Descarga|Boletín/i.test(t)
+              );
+
+            if (elementos.length > 0) {
+              return elementos[0];
+            }
           }
 
-          // ESTRATEGIA 3: Fallback de texto crudo si los párrafos están envueltos en spans o div sin <p>
-          const textoCompleto = contenedor.innerText.replace(/\s+/g, ' ').trim();
-          const frases = textoCompleto.split('.').filter(f => f.trim().length > 30);
-          return frases.length > 0 ? (frases[0].trim() + '.') : '';
+          // 3. Fallback: extraer la primera oración completa con sentido
+          const textoGeneral = document.body.innerText.replace(/\s+/g, ' ').trim();
+          const frases = textoGeneral.split(/\.\s+/).filter(f => f.length > 40 && f.length < 300);
+          return frases.length > 0 ? (frases[0] + '.') : '';
         });
 
-        console.log(`-> Descripción extraída (${descripcion.length} caracteres): "${descripcion.substring(0, 50)}..."`);
+        console.log(`-> Descripción: "${descripcion.substring(0, 60)}..."`);
 
         noticiasFinal.push({
           titulo: noticia.titulo,
@@ -148,22 +71,3 @@ const { chromium } = require('playwright');
         console.log(`Fallo en noticia ${noticia.enlace}:`, err.message);
       }
     }
-
-    console.log(`Procesadas correctamente: ${noticiasFinal.length}`);
-
-    // 4. Envío al Webhook
-    if (process.env.WEBHOOK_URL && noticiasFinal.length > 0) {
-      const resp = await fetch(process.env.WEBHOOK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(noticiasFinal)
-      });
-      console.log(`Respuesta del Webhook: ${resp.status}`);
-    }
-
-  } catch (errGen) {
-    console.error('Error general:', errGen.message);
-  } finally {
-    await browser.close();
-  }
-})();
