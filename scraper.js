@@ -1,7 +1,6 @@
 const { chromium } = require('playwright');
 
 (async () => {
-
   const browser = await chromium.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox']
@@ -15,7 +14,7 @@ const { chromium } = require('playwright');
   const page = await context.newPage();
 
   try {
-    // 1. Navegación usando domcontentloaded para evitar colapsar por red
+    // 1. Navegación usando domcontentloaded
     await page.goto('https://www.tunja-boyaca.gov.co/tema/noticias', {
       waitUntil: 'domcontentloaded',
       timeout: 45000
@@ -23,7 +22,7 @@ const { chromium } = require('playwright');
 
     await page.waitForTimeout(2000);
 
-    // 2. Hacer click en "CARGAR MÁS CONTENIDO"
+    // 2. Cargar más contenido
     for (let i = 0; i < 3; i++) {
       try {
         const boton = page.locator('text=CARGAR MÁS CONTENIDO');
@@ -40,7 +39,7 @@ const { chromium } = require('playwright');
       }
     }
 
-    // 3. Extracción de la lista base
+    // 3. Extracción de la lista base de noticias
     const noticiasBase = await page.evaluate(() => {
       const usados = new Set();
 
@@ -80,7 +79,7 @@ const { chromium } = require('playwright');
 
     console.log(`Noticias encontradas para procesar: ${noticiasBase.length}`);
 
-    // 4. Extracción de descripciones (limitado a máximo 10 noticias para acelerar)
+    // 4. Extracción de descripciones (limitado a 10 noticias)
     const noticiasFinal = [];
     const listaNoticias = noticiasBase.slice(0, 10);
 
@@ -90,19 +89,35 @@ const { chromium } = require('playwright');
         noticiaPage = await context.newPage();
         await noticiaPage.goto(noticia.enlace, {
           waitUntil: 'domcontentloaded',
-          timeout: 20000 // Reducido a 20s para no congelar el workflow
+          timeout: 20000
         });
 
+        // Esperar a que el cuerpo principal esté listo
+        await noticiaPage.waitForTimeout(1000);
+
         const descripcion = await noticiaPage.evaluate(() => {
-          const parrafos = [...document.querySelectorAll('p')]
-            .map(p => p.innerText.trim())
+          // Opción A: Obtener desde la etiqueta meta (más fiable y rápida)
+          const metaDesc = document.querySelector('meta[property="og:description"]')?.content ||
+                           document.querySelector('meta[name="description"]')?.content;
+
+          if (metaDesc && metaDesc.trim().length > 20) {
+            return metaDesc.trim();
+          }
+
+          // Opción B: Buscar dentro del contenido principal
+          const contenedor = document.querySelector('article') ||
+                             document.querySelector('.contenido-noticia') ||
+                             document.querySelector('.field-item') ||
+                             document.body;
+
+          const parrafos = [...contenedor.querySelectorAll('p')]
+            .map(p => p.innerText.replace(/\s+/g, ' ').trim())
             .filter(t =>
-              t.length > 80 &&
-              t.length < 400 &&
+              t.length > 30 &&
               !/Youtube:|Soundcloud:|Twitter:|Facebook:|Instagram:|TikTok:|Issuu:|Descarga boletín/i.test(t)
             );
 
-          return parrafos.find(t => t.includes('.') && t.split(' ').length > 10) || '';
+          return parrafos.slice(0, 2).join(' ') || '';
         });
 
         noticiasFinal.push({
