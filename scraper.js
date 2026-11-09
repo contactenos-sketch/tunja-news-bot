@@ -10,23 +10,39 @@ import { chromium } from 'playwright';
     ]
   });
 
+  // Contexto simulando un navegador Chrome real en Windows
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 720 }
+    viewport: { width: 1366, height: 768 },
+    locale: 'es-CO',
+    timezoneId: 'America/Bogota'
   });
 
   const page = await context.newPage();
 
+  // Ocultar banderas de automatización frente al servidor
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+  });
+
   try {
     console.log('1. Navegando a la lista de noticias...');
-    await page.goto('https://www.tunja-boyaca.gov.co/tema/noticias', {
+    const response = await page.goto('https://www.tunja-boyaca.gov.co/tema/noticias', {
       waitUntil: 'domcontentloaded',
       timeout: 60000
     });
 
-    await page.waitForTimeout(2000);
+    console.log(`Estado de respuesta HTTP: ${response ? response.status() : 'Sin respuesta'}`);
 
-    // Cargar más noticias mediante el botón
+    // Esperar explícitamente a que carguen los enlaces en la página
+    try {
+      await page.waitForSelector('a[href*="/noticias/"]', { timeout: 10000 });
+      console.log('Selector de enlaces detectado correctamente.');
+    } catch (e) {
+      console.log('Timeout: El selector a[href*="/noticias/"] no apareció a tiempo.');
+    }
+
+    // Intentar presionar el botón "Cargar más"
     for (let i = 0; i < 3; i++) {
       try {
         const boton = page.locator('text=CARGAR MÁS CONTENIDO');
@@ -42,11 +58,15 @@ import { chromium } from 'playwright';
       }
     }
 
-    // 2. Definición y extracción de la lista base
+    // 2. Extracción de noticias base
     console.log('2. Extrayendo enlaces de noticias...');
     const noticiasBase = await page.evaluate(() => {
       const usados = new Set();
-      return [...document.querySelectorAll('a[href*="/noticias/"]')]
+
+      // Busca enlaces que contengan /noticias/ o estén dentro del bloque principal de artículos
+      const enlaces = [...document.querySelectorAll('a[href*="/noticias/"]')];
+
+      return enlaces
         .map(a => {
           let titulo = a.innerText.replace(/\s+/g, ' ').trim();
           const enlace = a.href;
@@ -74,14 +94,16 @@ import { chromium } from 'playwright';
 
     console.log(`Total noticias base encontradas: ${noticiasBase.length}`);
 
-    // Validation: Si no encuentra noticias, evita que rompa el flujo
     if (!noticiasBase || noticiasBase.length === 0) {
-      console.log('No se encontraron noticias en el portal.');
+      console.log('No se encontraron noticias. Tomando captura para diagnóstico...');
+      // Muestra el título de la página abierta para verificar si fue bloqueada por Cloudflare / 403
+      const tituloPagina = await page.title();
+      console.log(`Título de la página cargada: "${tituloPagina}"`);
       await browser.close();
       return;
     }
 
-    // 3. Extracción de descripciones usando noticiasBase
+    // 3. Extracción de descripciones
     const noticiasFinal = [];
     const listaNoticias = noticiasBase.slice(0, 10);
 
@@ -94,22 +116,17 @@ import { chromium } from 'playwright';
           timeout: 30000
         });
 
-        // Esperar a que el cuerpo principal cargue en el DOM
         try {
           await page.waitForSelector('.field--name-body, article, .contenido-noticia, p', { timeout: 4000 });
-        } catch (e) {
-          // Continuar si vence el timeout
-        }
+        } catch (e) {}
 
         const descripcion = await page.evaluate(() => {
-          // Metaetiqueta OpenGraph / Description
           const metaOg = document.querySelector('meta[property="og:description"]')?.content;
           if (metaOg && metaOg.trim().length > 20) return metaOg.trim();
 
           const metaDesc = document.querySelector('meta[name="description"]')?.content;
           if (metaDesc && metaDesc.trim().length > 20) return metaDesc.trim();
 
-          // Selectores específicos de Drupal / MiColombiaDigital
           const contenedores = [
             document.querySelector('.field--name-body'),
             document.querySelector('.field--name-field-lead'),
@@ -122,8 +139,8 @@ import { chromium } from 'playwright';
             if (!c) continue;
             const elementos = [...c.querySelectorAll('p, div.field__item, div')]
               .map(el => el.innerText.replace(/\s+/g, ' ').trim())
-              .filter(t => 
-                t.length > 40 && 
+              .filter(t =>
+                t.length > 40 &&
                 t.length < 600 &&
                 !/Youtube:|Soundcloud:|Twitter:|Facebook:|Instagram:|TikTok:|Descarga|Boletín/i.test(t)
               );
