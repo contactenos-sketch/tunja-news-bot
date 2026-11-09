@@ -16,20 +16,17 @@ import { chromium } from 'playwright';
   try {
     console.log('1. Navegando al enlace de noticias oficial...');
 
-    // Ir a la URL exacta indicada
     await page.goto('https://www.tunja-boyaca.gov.co/tema/noticias', {
-      waitUntil: 'networkidle', // Esperar a que las peticiones de red finalicen
+      waitUntil: 'networkidle',
       timeout: 45000
     });
 
-    // Esperar explícitamente 3 segundos a que los bloques dinámicos inyecten las noticias en el DOM
     await page.waitForTimeout(3000);
 
-    // 2. Extraer los enlaces de las noticias cargadas
+    // 2. Extraer los enlaces de las noticias
     const noticiasBase = await page.evaluate(() => {
       const usados = new Set();
       
-      // Buscar todos los enlaces dentro del área principal de noticias
       const enlaces = [...document.querySelectorAll('a')].filter(a => {
         const href = a.href || '';
         return href.includes('/noticias/') && !href.endsWith('/tema/noticias');
@@ -39,7 +36,6 @@ import { chromium } from 'playwright';
         let titulo = a.innerText.replace(/\s+/g, ' ').trim();
         const enlace = a.href;
 
-        // Si el enlace no tiene texto (ej. es solo la imagen clickeable), buscar el título en la tarjeta
         if (titulo.length < 10) {
           const card = a.closest('.card, .views-row, .item, div');
           const heading = card?.querySelector('h1, h2, h3, h4, .titulo');
@@ -59,7 +55,7 @@ import { chromium } from 'playwright';
 
     console.log(`Noticias encontradas en la página: ${noticiasBase.length}`);
 
-    // 3. Obtener la descripción entrando a cada una
+    // 3. Extraer la descripción REAL del cuerpo de la noticia
     const noticiasFinal = [];
     for (const noticia of noticiasBase.slice(0, 10)) {
       try {
@@ -68,20 +64,31 @@ import { chromium } from 'playwright';
         await page.waitForTimeout(1500);
 
         const descripcion = await page.evaluate(() => {
-          // Extraer metaetiqueta o primer párrafo con texto continuo
-          const meta = document.querySelector('meta[property="og:description"]')?.content ||
-                     document.querySelector('meta[name="description"]')?.content;
-          
-          if (meta && meta.trim().length > 25) return meta.trim();
+          // ESTRATEGIA 1: Metaetiqueta OpenGraph específica (og:description suele traer el resumen real)
+          const metaOg = document.querySelector('meta[property="og:description"]')?.content;
+          if (metaOg && metaOg.trim().length > 30 && !metaOg.includes('La alcaldía de Tunja es una entidad')) {
+            return metaOg.trim();
+          }
 
-          const parrafos = [...document.querySelectorAll('.field--name-body p, article p, p')]
+          // ESTRATEGIA 2: Extraer directamente de los párrafos del cuerpo del artículo (Evitando footers y menus)
+          const contenedorNoticia = document.querySelector('.field--name-body') || 
+                                    document.querySelector('.node__content') || 
+                                    document.querySelector('article') || 
+                                    document.body;
+
+          const parrafos = [...contenedorNoticia.querySelectorAll('p')]
             .map(p => p.innerText.replace(/\s+/g, ' ').trim())
-            .filter(t => t.length > 40 && !/Youtube|Twitter|Facebook|Boletín/i.test(t));
+            .filter(texto => {
+              if (texto.length < 40) return false;
+              if (texto.includes('La alcaldía de Tunja es una entidad')) return false; // Filtrar texto genérico del sitio
+              if (/Youtube|Twitter|Facebook|Boletín|Derechos reservados/i.test(texto)) return false;
+              return true;
+            });
 
           return parrafos.length > 0 ? parrafos[0] : '';
         });
 
-        console.log(`  -> Desc: "${descripcion.substring(0, 45)}..."`);
+        console.log(`  -> Desc: "${descripcion.substring(0, 50)}..."`);
 
         noticiasFinal.push({
           titulo: noticia.titulo,
@@ -97,7 +104,7 @@ import { chromium } from 'playwright';
 
     console.log(`Total final procesadas: ${noticiasFinal.length}`);
 
-    // 4. Enviar datos al Webhook de Google Apps Script
+    // 4. Enviar datos al Webhook
     const webhookUrl = process.env.WEBHOOK_URL;
     if (webhookUrl && noticiasFinal.length > 0) {
       const res = await fetch(webhookUrl, {
