@@ -55,7 +55,7 @@ import { chromium } from 'playwright';
 
     console.log(`Noticias encontradas en la página: ${noticiasBase.length}`);
 
-    // 3. Extraer la descripción REAL del cuerpo de la noticia
+    // 3. Extraer la descripción del cuerpo de la noticia
     const noticiasFinal = [];
     for (const noticia of noticiasBase.slice(0, 10)) {
       try {
@@ -64,31 +64,37 @@ import { chromium } from 'playwright';
         await page.waitForTimeout(1500);
 
         const descripcion = await page.evaluate(() => {
-          // ESTRATEGIA 1: Metaetiqueta OpenGraph específica (og:description suele traer el resumen real)
+          // ESTRATEGIA 1: Metaetiqueta OpenGraph (og:description)
           const metaOg = document.querySelector('meta[property="og:description"]')?.content;
-          if (metaOg && metaOg.trim().length > 30 && !metaOg.includes('La alcaldía de Tunja es una entidad')) {
+          if (metaOg && metaOg.trim().length > 25 && !metaOg.includes('La alcaldía de Tunja es una entidad')) {
             return metaOg.trim();
           }
 
-          // ESTRATEGIA 2: Extraer directamente de los párrafos del cuerpo del artículo (Evitando footers y menus)
-          const contenedorNoticia = document.querySelector('.field--name-body') || 
-                                    document.querySelector('.node__content') || 
-                                    document.querySelector('article') || 
-                                    document.body;
+          // ESTRATEGIA 2: Párrafos dentro del contenedor del artículo
+          const contenedor = document.querySelector('.field--name-body') || 
+                             document.querySelector('.node__content') || 
+                             document.querySelector('article') || 
+                             document.body;
 
-          const parrafos = [...contenedorNoticia.querySelectorAll('p')]
+          const parrafos = [...contenedor.querySelectorAll('p, div.field__item')]
             .map(p => p.innerText.replace(/\s+/g, ' ').trim())
             .filter(texto => {
               if (texto.length < 40) return false;
-              if (texto.includes('La alcaldía de Tunja es una entidad')) return false; // Filtrar texto genérico del sitio
+              if (texto.includes('La alcaldía de Tunja es una entidad')) return false;
               if (/Youtube|Twitter|Facebook|Boletín|Derechos reservados/i.test(texto)) return false;
               return true;
             });
 
-          return parrafos.length > 0 ? parrafos[0] : '';
+          if (parrafos.length > 0) return parrafos[0];
+
+          // ESTRATEGIA 3: Fallback de texto libre (extrae la primera frase con sentido si no hay párrafos estándar)
+          const textoCompleto = contenedor.innerText.replace(/\s+/g, ' ').trim();
+          const frases = textoCompleto.split(/\.\s+/).filter(f => f.length > 40 && f.length < 300);
+          return frases.length > 0 ? (frases[0] + '.') : 'Descripción no disponible';
         });
 
-        console.log(`  -> Desc: "${descripcion.substring(0, 50)}..."`);
+        // Muestra en consola hasta 80 caracteres para verificar que traiga texto real
+        console.log(`  -> Desc: "${descripcion.substring(0, 80)}..."`);
 
         noticiasFinal.push({
           titulo: noticia.titulo,
@@ -104,7 +110,7 @@ import { chromium } from 'playwright';
 
     console.log(`Total final procesadas: ${noticiasFinal.length}`);
 
-    // 4. Enviar datos al Webhook
+    // 4. Enviar datos al Webhook de Google Apps Script
     const webhookUrl = process.env.WEBHOOK_URL;
     if (webhookUrl && noticiasFinal.length > 0) {
       const res = await fetch(webhookUrl, {
